@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+
+# Streamlit secrets & cache
+.streamlit/secrets.toml
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Database & local data
+data/cost_profit.db
+data/*.sqlite
+data/*.db
+data/backups/
+data/uploads/
+data/snapshots/
