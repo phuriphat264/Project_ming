@@ -27,17 +27,28 @@ pause
 exit /b 1
 
 :has_python
-echo Python found!
+echo Python found:
+%PYCMD% --version
 echo.
 
-if exist .venv\Scripts\python.exe goto :start_app
+if exist .venv\Scripts\streamlit.exe goto :start_app
 
-echo [*] First time setup: Creating Virtual Environment (.venv)...
-%PYCMD% -m venv .venv
+echo [*] Setting up Virtual Environment (.venv)...
+if not exist .venv\Scripts\python.exe (
+    %PYCMD% -m venv .venv
+)
 
-echo [*] Installing required packages from requirements.txt...
+echo [*] Installing required packages...
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+if not exist .venv\Scripts\streamlit.exe (
+    echo.
+    echo [ERROR] Package installation failed. Please check your internet connection.
+    pause
+    exit /b 1
+)
+
 echo [OK] Setup completed successfully!
 echo.
 
