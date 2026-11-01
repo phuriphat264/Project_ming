@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>คู่มือการใช้งานและเอกสารสถาปัตยกรรมระบบ — บริษัท มาตัง คอสเมติก จำกัด</title>
+<style>
+    @page {
+        size: A4;
+        margin: 20mm 15mm 20mm 20mm;
+        @bottom-right {
+            content: "หน้า " counter(page);
+            font-size: 10pt;
+            font-family: 'TH Sarabun New', 'TH Sarabun PSK', sans-serif;
+            color: #64748b;
+        }
+    }
+    body {
+        font-family: 'TH Sarabun New', 'TH Sarabun PSK', sans-serif;
+        font-size: 15pt;
+        line-height: 1.45;
+        color: #1e293b;
+    }
+    h1 {
+        font-size: 24pt;
+        font-weight: bold;
+        color: #0f172a;
+        text-align: center;
+        margin-top: 10px;
+        margin-bottom: 6px;
+    }
+    .subtitle {
+        text-align: center;
+        font-size: 16pt;
+        color: #475569;
+        margin-bottom: 25px;
+    }
+    h2 {
+        font-size: 18pt;
+        font-weight: bold;
+        color: #1e3a8a;
+        border-bottom: 2px solid #cbd5e1;
+        padding-bottom: 4px;
+        margin-top: 24px;
+        margin-bottom: 12px;
+    }
+    h3 {
+        font-size: 16pt;
+        font-weight: bold;
+        color: #0f172a;
+        margin-top: 14px;
+        margin-bottom: 6px;
+    }
+    p, li {
+        text-align: justify;
+    }
+    ul, ol {
+        margin-top: 4px;
+        margin-bottom: 10px;
+        padding-left: 25px;
+    }
+    li {
+        margin-bottom: 4px;
+    }
+    .highlight-box {
+        background-color: #f8fafc;
+        border-left: 4px solid #3b82f6;
+        padding: 10px 14px;
+        margin: 12px 0;
+        border-radius: 0 8px 8px 0;
+    }
+    .alert-box {
+        background-color: #fef2f2;
+        border-left: 4px solid #ef4444;
+        padding: 10px 14px;
+        margin: 12px 0;
+        border-radius: 0 8px 8px 0;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 14px 0;
+        font-size: 13.5pt;
+    }
+    th, td {
+        border: 1px solid #cbd5e1;
+        padding: 8px 10px;
+        text-align: left;
+    }
+    th {
+        background-color: #f1f5f9;
+        font-weight: bold;
+        color: #0f172a;
+    }
+    .code-inline {
+        font-family: monospace;
+        background: #e2e8f0;
+        padding: 2px 5px;
+        border-radius: 4px;
+        font-size: 12.5pt;
+    }
+    .page-break {
+        page-break-before: always;
+    }
+</style>
+</head>
+<body>
+
+<h1>คู่มือการใช้งานและเอกสารสถาปัตยกรรมระบบ<br>ระบบคำนวณต้นทุนและวิเคราะห์กำไรขาดทุน TikTok Shop</h1>
+<div class="subtitle">บริษัท มาตัง คอสเมติก จำกัด (Matang Cosmetic Co., Ltd.)<br>ผู้พัฒนา: นายวรณ วิโคตร (รหัสนิสิต 67310177) | สาขาวิชาเทคโนโลยีสารสนเทศและวิทยาการข้อมูล มหาวิทยาลัยบูรพา</div>
+
+<div class="highlight-box">
+    <b>วัตถุประสงค์ของเอกสาร:</b> เพื่ออธิบายรายละเอียดโครงสร้างระบบ สถาปัตยกรรมข้อมูล ขั้นตอนการทำงาน (Workflow) สูตรการคำนวณต้นทุน-กำไรตามหลักบัญชี และคู่มือการติดตั้งใช้งานสำหรับฝ่ายบัญชีและผู้บริหาร บริษัท มาตัง คอสเมติก จำกัด
+</div>
+
+<h2>1. โครงสร้างและการทำงานของระบบ (System Architecture)</h2>
+<p>
+ระบบถูกพัฒนาขึ้นในรูปแบบ Web Application แบบตอบสนองฉับไว (Interactive Single-Page Architecture) โดยใช้ภาษา <b>Python 3.10+</b> ร่วมกับเฟรมเวิร์ก <b>Streamlit</b> และฐานข้อมูลแบบฝังตัว <b>SQLite + Apache Parquet</b> เพื่อรองรับการประมวลผลคำสั่งซื้อปริมาณมากระดับหลายหมื่นออเดอร์ต่อวินาทีได้อย่างราบรื่น
+</p>
+
+<h3>1.1 องค์ประกอบของระบบหลัก (Core Components)</h3>
+<ul>
+    <li><b>Data Ingestion (core/loader.py):</b> โมดูลนำเข้าและแปลงข้อมูล (ETL) สามารถตรวจจับและทำความสะอาดแถวหัวตารางที่ซ้ำซ้อนของ TikTok Shop โดยอัตโนมัติ (Header Auto-Recovery) รองรับทั้งภาษาไทยและอังกฤษ</li>
+    <li><b>Pipeline & Deduplication Engine (core/pipeline.py):</b> เครื่องมือจับคู่และจัดกลุ่มคำสั่งซื้อ (Order-SKU Matcher) พร้อมกลไกป้องกันการคิดต้นทุนซ้ำ <i>(1 COGS per Order ID)</i> สำหรับออเดอร์ที่มีหลาย SKU หรือมีรายการคืนค่าจัดส่งย้อนหลัง</li>
+    <li><b>Financial Metrics Engine (core/metrics.py):</b> โมดูลคำนวณตัวเลขทางบัญชี กำไรขั้นต้น กำไรสุทธิ Break-even Point และจำลองสถานการณ์ What-If</li>
+    <li><b>Database & Snapshot Storage (core/db.py):</b> ระบบบันทึกข้อมูลงวดแบบ Columnar Storage (Parquet) แยกรายงวด พร้อมฐานข้อมูล SQLite เก็บโครงสร้างต้นทุนและบัญชีผู้ใช้งาน</li>
+</ul>
+
+<h2>2. สูตรการคำนวณต้นทุนและกำไร (Calculation Formulas)</h2>
+<p>
+การคำนวณในระบบอ้างอิงตรงตามโครงสร้างเอกสารรายงานทางการเงินของ TikTok Shop Seller Center เพื่อให้ตัวเลขทางบัญชีกระทบยอดตรงกับยอดเงินที่เข้าบัญชีธนาคารจริงของบริษัท:
+</p>
+
+<table>
+    <tr>
+        <th style="width: 28%;">ตัวชี้วัด / คอลัมน์</th>
+        <th style="width: 42%;">สูตรการคำนวณในระบบ</th>
+        <th>คำอธิบาย</th>
+    </tr>
+    <tr>
+        <td><b>1. ยอดเงินโอนสุทธิ (F)<br>(Net Settlement)</b></td>
+        <td><span class="code-inline">ยอดขายรวม - ค่าธรรมเนียมทั้งหมด - แอด GMV</span></td>
+        <td>ยอดเงินจริงที่ TikTok โอนเข้าบัญชีบริษัท (หัก Transaction Fee, Commission Fee, ค่าส่งเรียบร้อยแล้ว)</td>
+    </tr>
+    <tr>
+        <td><b>2. มูลค่าต้นทุน SKU (J)<br>(SKU Cost Value)</b></td>
+        <td><span class="code-inline">Net Qty × ต้นทุนต่อหน่วย (I)</span></td>
+        <td><span class="code-inline">Net Qty = จำนวนขาย - จำนวนส่งคืน</span><br>คำนวณเฉพาะจำนวนชิ้นที่ส่งมอบสำเร็จ</td>
+    </tr>
+    <tr>
+        <td><b>3. ต้นทุนรวมคำสั่งซื้อ (G)<br>(Total Order Cost)</b></td>
+        <td><span class="code-inline">ผลรวมของคอลัมน์ J ในคำสั่งซื้อนั้น</span></td>
+        <td><b>มีกลไกป้องกันต้นทุนเบิ้ล:</b> บันทึกต้นทุนสินค้าเพียงครั้งเดียวต่อ 1 Order ID แม้จะมีแถวซ้ำจากการคืนค่าส่ง</td>
+    </tr>
+    <tr>
+        <td><b>4. กำไรหลังหักแอด GMV (H)<br>(Order Profit)</b></td>
+        <td><span class="code-inline">ยอดเงินโอนสุทธิ (F) - ต้นทุนรวม (G)</span></td>
+        <td>กำไรจากการขายหลังหักต้นทุนสินค้าและค่าแอดโฆษณา GMV</td>
+    </tr>
+    <tr>
+        <td><b>5. กำไรสุทธิสุดท้าย<br>(Net Operating Profit)</b></td>
+        <td><span class="code-inline">กำไรหลังแอด (H) - ค่าคอมฯ - ค่าใช้จ่ายคงที่</span></td>
+        <td>กำไรสุทธิทางบัญชีหลังหักค่าคอมมิชชั่นคนขาย และต้นทุนคงที่โรงงาน (ค่าแรง, ค่าน้ำ, ค่าไฟ)</td>
+    </tr>
+    <tr>
+        <td><b>6. จุดคุ้มทุน (BEP)<br>(Break-even Point)</b></td>
+        <td><span class="code-inline">ค่าใช้จ่ายคงที่ ÷ อัตรากำไรส่วนเกิน (Margin)</span></td>
+        <td>ยอดขายขั้นต่ำที่บริษัทต้องทำให้ได้เพื่อให้คุ้มกับค่าใช้จ่ายคงที่ของโรงงานในงวดนั้นๆ</td>
+    </tr>
+</table>
+
+<div class="page-break"></div>
+
+<h2>3. เมนูและฟังก์ชันการใช้งานในระบบ (System Functions)</h2>
+
+<ol>
+    <li><b>หน้าหลัก (Home):</b> สรุปภาพรวมผลการดำเนินงาน ยอดขายสะสม กำไรสุทธิรวม และสถิติสถานะของระบบ</li>
+    <li><b>แดชบอร์ด (📊 แดชบอร์ด):</b>
+        <ul>
+            <li>แบนเนอร์ฟันธงสถานะกำไร/ขาดทุน พร้อมจำนวนออเดอร์ที่ขาดทุน</li>
+            <li>การ์ดตัวชี้วัดหลัก 4 ตัว (ยอดชำระ F, ต้นทุนสินค้า G, กำไรหลังแอด GMV H, และกำไรสุทธิ)</li>
+            <li>กราฟแท่งเปรียบเทียบผลประกอบการรายเดือน (จัดกลุ่ม Categorical ชัดเจน)</li>
+            <li>กราฟวิเคราะห์แนวโน้มรายวัน (Daily Trend) สลับดูกำไรก่อน/หลังแอด GMV ได้</li>
+            <li>ตารางจำแนกกำไร/ขาดทุนตามราย SKU สินค้า และตารางตรวจจับออเดอร์ขาดทุน (Anomaly Detection)</li>
+        </ul>
+    </li>
+    <li><b>นำเข้าข้อมูล (📤 นำเข้าข้อมูล):</b>
+        <ul>
+            <li>อัปโหลดไฟล์ Excel จาก TikTok Shop (รองรับการ Drag & Drop)</li>
+            <li>ระบบตรวจจับหัวตารางและกู้คืนโครงสร้างไฟล์อัตโนมัติ</li>
+            <li>ระบบเชื่อมรวมข้อมูลข้ามไฟล์/ข้ามเดือน พร้อมตัดข้อมูลซ้ำซ้อน</li>
+            <li>กล่องเลือกเปิดดูงวดเดิมที่เคยบันทึก หรือกดปุ่ม <b>"🗑️ ลบงวด" / "🗑️ ลบข้อมูลทุกงวด"</b> เพื่อล้างข้อมูล</li>
+        </ul>
+    </li>
+    <li><b>สินค้าและต้นทุน (📦 สินค้าและต้นทุน):</b>
+        <ul>
+            <li>จัดการราคาทุนต่อหน่วยของสินค้าแต่ละ SKU (มีผลคำนวณใหม่แบบเรียลไทม์ทันที)</li>
+            <li>บันทึกค่าใช้จ่ายคงที่ของโรงงานแยกตามงวดเดือน (ค่าแรง, ค่าเช่า, ค่าน้ำ, ค่าไฟ)</li>
+            <li>กำหนดอัตราค่าคอมมิชชั่นพนักงานขาย (%)</li>
+        </ul>
+    </li>
+    <li><b>วิเคราะห์ขั้นสูง (🎛️ วิเคราะห์ขั้นสูง):</b>
+        <ul>
+            <li>เครื่องมือจำลองสถานการณ์ต้นทุน (What-If Profit Simulator) ให้ผู้บริหารทดลองปรับ % ต้นทุน ค่าแอด หรือราคาสินค้าล่วงหน้า</li>
+            <li>การวิเคราะห์ความอ่อนไหวของผลกำไร (Sensitivity Analysis)</li>
+        </ul>
+    </li>
+    <li><b>รายงาน (📑 รายงาน):</b>
+        <ul>
+            <li>ส่งออกตารางข้อมูลคำนวณครบทุกชีตเป็นไฟล์ Microsoft Excel (.xlsx)</li>
+            <li>พิมพ์รายงานสรุปผลการดำเนินงานผู้บริหาร (Executive Summary) แบบ Print to PDF</li>
+        </ul>
+    </li>
+    <li><b>ผู้ใช้งานและความปลอดภัย (⚙️ ผู้ใช้งาน):</b>
+        <ul>
+            <li>จำแนกสิทธิ์ 2 ระดับ: <b>Admin (ผู้บริหาร)</b> และ <b>Staff (พนักงาน)</b></li>
+            <li>รหัสผ่านเข้ารหัสแบบ Bcrypt ป้องกันการโจรกรรมข้อมูล</li>
+            <li>ระบบ One-Click Database Backup & Restore สำรองฐานข้อมูลทั้งระบบเป็น .zip</li>
+        </ul>
+    </li>
+</ol>
+
+<h2>4. ขั้นตอนการติดตั้งและเปิดใช้งาน (Installation & Setup)</h2>
+
+<div class="highlight-box">
+    <b>ความต้องการของระบบ (System Requirements):</b>
+    <ul>
+        <li>ระบบปฏิบัติการ: Windows 10/11 หรือ macOS 12+</li>
+        <li>โปรแกรม Python 3.10 ขึ้นไป <i>(ตอนติดตั้งบน Windows ต้องติ๊กถูก "Add python.exe to PATH")</i></li>
+    </ul>
+</div>
+
+<h3>ขั้นตอนการเปิดระบบ:</h3>
+<ol>
+    <li>แตกไฟล์ ZIP <b>"ระบบคำนวณต้นทุน_มาตังคอสเมติก.zip"</b> ลงในเครื่อง</li>
+    <li><b>สำหรับผู้ใช้งาน Windows:</b> ดับเบิลคลิกที่ไฟล์ <span class="code-inline">ติดตั้งและเปิดใช้งาน_Windows.bat</span></li>
+    <li><b>สำหรับผู้ใช้งาน Mac:</b> ดับเบิลคลิกที่ไฟล์ <span class="code-inline">เปิดระบบ_Mac.command</span></li>
+    <li>ระบบจะสร้าง Virtual Environment และติดตั้งโมดูลที่จำเป็นให้อัตโนมัติในครั้งแรก จากนั้นหน้าเว็บจะเปิดขึ้นมาที่ <span class="code-inline">http://localhost:8501</span> ทันที</li>
+</ol>
+
+<h3>ข้อมูลบัญชีเข้าสู่ระบบเริ่มต้น:</h3>
+<table>
+    <tr>
+        <th>ระดับสิทธิ์</th>
+        <th>ชื่อผู้ใช้ (Username)</th>
+        <th>รหัสผ่าน (Password)</th>
+        <th>สิทธิ์การใช้งาน</th>
+    </tr>
+    <tr>
+        <td><b>ผู้บริหาร (Admin)</b></td>
+        <td><span class="code-inline">admin</span></td>
+        <td><span class="code-inline">admin123</span></td>
+        <td>เข้าถึงได้ทุกหน้า แก้ไขต้นทุน ลบข้อมูล จัดการผู้ใช้ สำรองระบบ</td>
+    </tr>
+    <tr>
+        <td><b>พนักงาน (Staff)</b></td>
+        <td><span class="code-inline">staff</span></td>
+        <td><span class="code-inline">staff123</span></td>
+        <td>เข้าดูแดชบอร์ด นำเข้าข้อมูล และส่งออกรายงาน</td>
+    </tr>
+</table>
+
+</body>
+</html>
