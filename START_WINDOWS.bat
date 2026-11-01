@@ -1,38 +1,34 @@
 @echo off
-chcp 65001 >nul
-title ระบบคำนวณต้นทุนและกำไร - บริษัท มาตัง คอสเมติก จำกัด
+cd /d "%~dp0"
+title Matang Cost Profit System
 
 echo ========================================================
-echo   ระบบคำนวณต้นทุนและกำไร TikTok Shop (มาตัง คอสเมติก)
+echo   Matang Cosmetic - Cost and Profit Analysis System
 echo ========================================================
 echo.
 
-cd /d "%~dp0"
-
 where python >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [!] ตรวจไม่พบ Python ในเครื่องนี้
-    echo     กรุณาดาวน์โหลดและติดตั้ง Python 3.10+ จาก https://www.python.org/downloads/
-    echo     *ข้อสำคัญ: อย่าลืมติ๊กถูก "Add python.exe to PATH" ตอนติดตั้งด้วยครับ*
+    echo [ERROR] Python not found in this PC.
+    echo Please install Python 3.10+ from https://www.python.org/downloads/
+    echo *IMPORTANT: Make sure to check "Add python.exe to PATH" during installation*
     echo.
     pause
     exit /b 1
 )
 
 if not exist ".venv" (
-    echo [*] ตรวจพบการเปิดใช้งานครั้งแรก กำลังสร้าง Virtual Environment (.venv)...
+    echo [*] First time setup: Creating Virtual Environment (.venv)...
     python -m venv .venv
-    echo [*] กำลังติดตั้งไลบรารีที่จำเป็นจาก requirements.txt (ใช้เวลาประมาณ 1-2 นาที)...
-    call .venv\Scripts\activate.bat
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
-    echo [OK] ติดตั้งสภาพแวดล้อมเสร็จสมบูรณ์!
+    echo [*] Installing required packages from requirements.txt...
+    call .venv\Scripts\python.exe -m pip install --upgrade pip
+    call .venv\Scripts\pip.exe install -r requirements.txt
+    echo [OK] Setup completed successfully!
     echo.
 )
 
-echo [*] กำลังเปิดระบบคำนวณต้นทุน...
-call .venv\Scripts\activate.bat
+echo [*] Starting web application...
 start "" http://localhost:8501
-streamlit run app.py --server.headless=true
+call .venv\Scripts\python.exe -m streamlit run app.py --server.headless=true
 
 pause
