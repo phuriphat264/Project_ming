@@ -287,16 +287,25 @@ with col_history:
                     db.set_app_state("active_period", selected_snap)
                     st.session_state.update(result=loaded_res, period=selected_snap, notes=[])
                     st.rerun()
-            if (
-                is_admin()
-                and selected_snap != ALL_PERIODS_KEY
-                and b_del.button("🗑️ ลบงวดนี้", type="secondary", width="stretch")
+            if is_admin() and b_del.button(
+                "🗑️ ลบงวดนี้" if selected_snap != ALL_PERIODS_KEY else "🗑️ ลบข้อมูลทุกงวด",
+                type="secondary",
+                width="stretch",
             ):
-                db.delete_snapshot(selected_snap)
-                if st.session_state.get("period") in (selected_snap, ALL_PERIODS_KEY):
+                if selected_snap == ALL_PERIODS_KEY:
+                    for m in db.list_snapshots()["month"].tolist():
+                        db.delete_snapshot(m)
+                    db.set_app_state("active_period", "")
                     for k in ("result", "period", "raw", "notes"):
                         st.session_state.pop(k, None)
-                st.toast(f"ลบงวด {selected_snap} แล้ว")
+                    st.toast("ลบข้อมูลงวดทั้งหมดเรียบร้อยแล้ว")
+                else:
+                    db.delete_snapshot(selected_snap)
+                    if st.session_state.get("period") in (selected_snap, ALL_PERIODS_KEY):
+                        for k in ("result", "period", "raw", "notes"):
+                            st.session_state.pop(k, None)
+                    db.set_app_state("active_period", "")
+                    st.toast(f"ลบงวด {selected_snap} แล้ว")
                 st.rerun()
 
             if is_admin():
