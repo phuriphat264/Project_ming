@@ -110,6 +110,21 @@ def init_db(db_path: Path | None = None) -> None:
                     (user, _hash(pw), role, display),
                 )
 
+        # เมล็ดพันธุ์ SKU เริ่มต้น หากตารางยังว่างเปล่า (รองรับการ clone โปรเจกต์ใหม่)
+        if c.execute("SELECT COUNT(*) FROM sku").fetchone()[0] == 0:
+            default_sku_csv = Path(__file__).resolve().parent.parent / "data" / "default_master_skus.csv"
+            if default_sku_csv.exists():
+                try:
+                    seed_df = pd.read_csv(default_sku_csv, encoding="utf-8-sig")
+                    seed_df = _normalize_sku_frame(seed_df)
+                    placeholders = ", ".join(["?"] * len(SKU_COLUMNS))
+                    c.executemany(
+                        f"INSERT INTO sku ({', '.join(SKU_COLUMNS)}) VALUES ({placeholders})",
+                        seed_df[SKU_COLUMNS].itertuples(index=False, name=None),
+                    )
+                except Exception:
+                    pass
+
 
 # ---------- users ----------
 def _hash(password: str) -> str:
