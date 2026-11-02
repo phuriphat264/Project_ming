@@ -1,3 +1,7 @@
+from core.ui import init_page
+
+init_page("สินค้าและต้นทุน", "📦")
+
 from core.reloader import ensure_fresh
 
 ensure_fresh()
@@ -14,17 +18,23 @@ from core.loader import load_workbook
 from core.pipeline import ALL_PERIODS_KEY
 from core.ui import (
     baht,
-    init_page,
     render_kpi_card,
     render_page_header,
     render_section_header,
     require_login,
 )
 
-init_page("สินค้าและต้นทุน", "📦")
 require_login(admin_only=True)
 
 render_page_header("จัดการตาราง SKU (ราคาทุน / ปลีก / โปร / ตั้งขาย) และค่าใช้จ่ายรายเดือน", period=st.session_state.get("period"))
+
+
+def _clear_export_caches() -> None:
+    st.session_state.pop("_cached_master_excel_key", None)
+    st.session_state.pop("_cached_master_excel_bytes", None)
+    st.session_state.pop("_cached_rep_key", None)
+    st.session_state.pop("_cached_rep_master_xlsx", None)
+    st.session_state.pop("_cached_rep_xlsx", None)
 
 
 # ==================== DIALOGS: SKU ====================
@@ -68,11 +78,13 @@ def edit_sku_dialog(row: dict) -> None:
                     ]
                 )
             )
+            _clear_export_caches()
             st.toast(f"บันทึก {row['sku']} เรียบร้อยแล้ว")
             st.rerun()
 
         if delete_clicked:
             db.delete_sku(row["sku"])
+            _clear_export_caches()
             st.toast(f"ลบ {row['sku']} เรียบร้อยแล้ว")
             st.rerun()
 
@@ -110,6 +122,7 @@ def add_sku_dialog() -> None:
                         ]
                     )
                 )
+                _clear_export_caches()
                 st.toast(f"เพิ่มสินค้า {sku.strip()} เรียบร้อยแล้ว")
                 st.rerun()
 
@@ -199,6 +212,20 @@ tab_sku, tab_fixed, tab_bulk = st.tabs(
 # ==================== TAB 1: SKU MASTER ====================
 with tab_sku:
     with st.container(border=True):
+        st.markdown(
+            """
+            <div style="background: linear-gradient(135deg, #eff6ff 0%, #e0e7ff 100%); border: 1px solid #c7d2fe; border-radius: 14px; padding: 14px 18px; margin-bottom: 16px;">
+                <div style="font-size: 1.02rem; font-weight: 800; color: #1e1b4b; display: flex; align-items: center; gap: 8px;">
+                    💡 วิธีใช้งานตาราง SKU & ความหมายของราคาทุน:
+                </div>
+                <div style="font-size: 0.92rem; color: #3730a3; margin-top: 4px; line-height: 1.55;">
+                    • <b>ราคาทุน (คอลัมน์สีแดง/ดำ):</b> ทุนจริงของสินค้าต่อ 1 ชิ้น ที่ระบบจะนำไปคูณจำนวนขายจริงเพื่อคิดต้นทุน (Col G) และกำไรสุทธิ (Col H)<br>
+                    • <b>กดปุ่ม ✏️ แก้ไข:</b> แก้ไขราคาทุนหรือชื่อสินค้า | <b>กด ➕ เพิ่มสินค้าใหม่:</b> เพื่อใส่สินค้าตัวใหม่เข้าระบบ
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         f1, f2, f3, f4 = st.columns([2.1, 1.1, 1.0, 1.0], gap="small")
         q = f1.text_input("ค้นหา", label_visibility="collapsed", placeholder="🔎 ค้นหารหัส, ชื่อ หรือหมวดหมู่...")
         only_missing = f2.checkbox("เฉพาะที่ยังไม่มีราคาทุน")
@@ -215,10 +242,11 @@ with tab_sku:
             view = view[view["unit_cost"] <= 0]
 
         st.markdown(
-            '<div style="background:#f8fafc;border-top:2px solid #e2e8f0;border-bottom:2px solid #e2e8f0;'
-            'padding:12px 14px;margin-top:8px;font-size:1.02rem;font-weight:700;color:#1e293b;'
+            '<div style="background:linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);border:1px solid #e2e8f0;'
+            'border-radius:12px;padding:14px 16px;margin:12px 0 8px 0;font-size:0.95rem;font-weight:800;color:#475569;'
+            'text-transform:uppercase;letter-spacing:0.02em;'
             'display:grid;grid-template-columns:1.25fr 2.4fr 0.9fr 0.85fr 0.85fr 0.9fr 0.75fr 0.55fr;gap:8px;align-items:center;">'
-            "<div>รหัส</div><div>ชื่อ</div>"
+            "<div>รหัส SKU</div><div>ชื่อสินค้า</div>"
             '<div style="text-align:right;">ราคาทุน</div>'
             '<div style="text-align:right;">ราคาปลีก</div>'
             '<div style="text-align:right;">ราคาโปร</div>'
@@ -231,8 +259,20 @@ with tab_sku:
         if view.empty:
             st.info("ยังไม่มีข้อมูลสินค้าในระบบ (กด ➕ เพิ่มสินค้าใหม่ หรืออัปโหลดไฟล์ Excel ที่มีชีต SKU)")
         else:
-            with st.container(height=540, border=False):
-                for _, r in view.iterrows():
+            total_items = len(view)
+            page_size = 20
+            total_pages = max(1, (total_items + page_size - 1) // page_size)
+
+            cur_page = st.session_state.get("sku_page_num", 1)
+            if cur_page > total_pages:
+                cur_page = 1
+                st.session_state["sku_page_num"] = 1
+
+            start_idx = (cur_page - 1) * page_size
+            page_slice = view.iloc[start_idx : start_idx + page_size]
+
+            with st.container(height=520, border=False):
+                for _, r in page_slice.iterrows():
                     cols = st.columns([1.25, 2.4, 0.9, 0.85, 0.85, 0.9, 0.75, 0.55])
                     cols[0].markdown(f"<div style='font-size:1.02rem;font-weight:600;padding-top:8px;'>{html.escape(str(r['sku']))}</div>", unsafe_allow_html=True)
                     cols[1].markdown(f"<div style='font-size:1.02rem;color:#0f172a;padding-top:8px;'>{html.escape(str(r['name'] or '-'))}</div>", unsafe_allow_html=True)
@@ -257,10 +297,23 @@ with tab_sku:
                         edit_sku_dialog(r.to_dict())
                     if cols[7].button("🗑️", key=f"del_btn_{r['sku']}", width="stretch", help=f"ลบ {r['sku']}"):
                         db.delete_sku(str(r["sku"]))
+                        _clear_export_caches()
                         st.toast(f"ลบ {r['sku']} เรียบร้อยแล้ว")
                         st.rerun()
 
-        st.caption(f"แสดงทั้งหมด {len(view):,} รายการ (เลื่อนขึ้น-ลงในตารางเพื่อดูรายการทั้งหมดได้เลย)")
+            # แถบควบคุมหน้า (Pagination)
+            pg_c1, pg_c2 = st.columns([1.5, 1.2])
+            with pg_c1:
+                st.caption(f"แสดงรายการที่ **{start_idx + 1} - {min(start_idx + page_size, total_items)}** จากทั้งหมด **{total_items:,}** รายการ")
+            with pg_c2:
+                p_prev, p_page, p_next = st.columns([1, 1.2, 1])
+                if p_prev.button("◀ ก่อนหน้า", disabled=(cur_page <= 1), width="stretch", key="btn_sku_prev"):
+                    st.session_state["sku_page_num"] = max(1, cur_page - 1)
+                    st.rerun()
+                p_page.markdown(f"<div style='text-align:center;padding-top:6px;font-size:0.95rem;color:#475569;'><b>{cur_page} / {total_pages}</b></div>", unsafe_allow_html=True)
+                if p_next.button("ถัดไป ▶", disabled=(cur_page >= total_pages), width="stretch", key="btn_sku_next"):
+                    st.session_state["sku_page_num"] = min(total_pages, cur_page + 1)
+                    st.rerun()
 
 # ==================== TAB 2: FACTORY OVERHEAD & COMMISSION ====================
 with tab_fixed:

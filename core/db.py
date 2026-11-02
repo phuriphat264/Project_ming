@@ -389,6 +389,8 @@ def save_snapshot(
     warnings: list[str],
     fee_details: dict[str, float] | None = None,
     withdrawals_df: pd.DataFrame | None = None,
+    raw_settlement_df: pd.DataFrame | None = None,
+    raw_orders_df: pd.DataFrame | None = None,
     db_path: Path | None = None,
 ) -> None:
     sdir = _snapshot_dir(db_path)
@@ -398,6 +400,8 @@ def save_snapshot(
     lines_path = sdir / f"{stem}_lines.parquet"
     ads_path = sdir / f"{stem}_ads.parquet"
     wd_path = sdir / f"{stem}_withdrawals.parquet"
+    raw_s_path = sdir / f"{stem}_raw_settle.parquet"
+    raw_o_path = sdir / f"{stem}_raw_orders.parquet"
 
     orders_df.to_parquet(orders_path, index=False)
     lines_df.to_parquet(lines_path, index=False) if not lines_df.empty else lines_path.unlink(missing_ok=True)
@@ -406,6 +410,10 @@ def save_snapshot(
         withdrawals_df.to_parquet(wd_path, index=False)
     else:
         wd_path.unlink(missing_ok=True)
+    if raw_settlement_df is not None and not raw_settlement_df.empty:
+        raw_settlement_df.to_parquet(raw_s_path, index=False)
+    if raw_orders_df is not None and not raw_orders_df.empty:
+        raw_orders_df.to_parquet(raw_o_path, index=False)
 
     payload = dict(summary_dict)
     if fee_details:
@@ -478,6 +486,8 @@ def load_snapshot(month: str, db_path: Path | None = None) -> dict | None:
     lines_path = sdir / f"{stem}_lines.parquet"
     ads_path = sdir / f"{stem}_ads.parquet"
     wd_path = sdir / f"{stem}_withdrawals.parquet"
+    raw_s_path = sdir / f"{stem}_raw_settle.parquet"
+    raw_o_path = sdir / f"{stem}_raw_orders.parquet"
 
     if not orders_path.exists():
         return None
@@ -486,6 +496,8 @@ def load_snapshot(month: str, db_path: Path | None = None) -> dict | None:
     lines_df = pd.read_parquet(lines_path) if lines_path.exists() else pd.DataFrame()
     ads_df = pd.read_parquet(ads_path) if ads_path.exists() else pd.DataFrame()
     wd_df = pd.read_parquet(wd_path) if wd_path.exists() else pd.DataFrame()
+    raw_s_df = pd.read_parquet(raw_s_path) if raw_s_path.exists() else pd.DataFrame()
+    raw_o_df = pd.read_parquet(raw_o_path) if raw_o_path.exists() else pd.DataFrame()
 
     parsed_summary = json.loads(row[0])
     fee_details = parsed_summary.pop("_fee_details", {}) if isinstance(parsed_summary, dict) else {}
@@ -500,13 +512,15 @@ def load_snapshot(month: str, db_path: Path | None = None) -> dict | None:
         "lines": lines_df,
         "ads": ads_df,
         "withdrawals": wd_df,
+        "raw_settlement": raw_s_df,
+        "raw_orders": raw_o_df,
     }
 
 
 def delete_snapshot(month: str, db_path: Path | None = None) -> None:
     sdir = _snapshot_dir(db_path)
     for stem in {month, _safe_month_stem(month)}:
-        for ext in ("_orders.parquet", "_lines.parquet", "_ads.parquet", "_withdrawals.parquet"):
+        for ext in ("_orders.parquet", "_lines.parquet", "_ads.parquet", "_withdrawals.parquet", "_raw_settle.parquet", "_raw_orders.parquet"):
             p = sdir / f"{stem}{ext}"
             if p.exists():
                 p.unlink(missing_ok=True)
@@ -606,6 +620,10 @@ def create_backup_zip_bytes(db_path: Path | None = None) -> bytes:
             for f in up_dir.iterdir():
                 if f.is_file():
                     zf.write(f, arcname=f"uploads/{f.name}")
+        repo_dir = data_dir / "order_repo"
+        if repo_dir.exists():
+            for f in repo_dir.glob("*.parquet"):
+                zf.write(f, arcname=f"order_repo/{f.name}")
     return buf.getvalue()
 
 

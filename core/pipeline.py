@@ -111,6 +111,9 @@ class PipelineResult:
     warnings: list[str] = field(default_factory=list)
     fee_details: dict[str, float] = field(default_factory=dict)  # ยอดรวมทุกคอลัมน์สำหรับสร้างตาราง 'รายงาน' ของ TikTok
     withdrawals: pd.DataFrame = field(default_factory=pd.DataFrame)  # ชีตบันทึกการถอน (ถ้ามี)
+    raw_settlement: pd.DataFrame = field(default_factory=pd.DataFrame)
+    raw_orders: pd.DataFrame = field(default_factory=pd.DataFrame)
+    extra_sheets: dict[str, pd.DataFrame] = field(default_factory=dict)
 
 
 def combine(workbooks: list[LoadedWorkbook]) -> LoadedWorkbook:
@@ -120,9 +123,13 @@ def combine(workbooks: list[LoadedWorkbook]) -> LoadedWorkbook:
     orders = [w.orders for w in workbooks if not w.orders.empty]
     ads = [w.ads for w in workbooks if not w.ads.empty]
     wds = [w.withdrawals for w in workbooks if not w.withdrawals.empty]
+    raw_settle = [w.raw_settlement for w in workbooks if not w.raw_settlement.empty]
+    raw_ords = [w.raw_orders for w in workbooks if not w.raw_orders.empty]
 
     if settle:
         merged.settlement = pd.concat(settle, ignore_index=True).drop_duplicates()
+    if raw_settle:
+        merged.raw_settlement = pd.concat(raw_settle, ignore_index=True)
     if orders:
         tagged = []
         for w_o in orders:
@@ -137,11 +144,16 @@ def combine(workbooks: list[LoadedWorkbook]) -> LoadedWorkbook:
             .drop(columns=["_line_seq"], errors="ignore")
             .reset_index(drop=True)
         )
+    if raw_ords:
+        merged.raw_orders = pd.concat(raw_ords, ignore_index=True)
     if ads:
         merged.ads = pd.concat(ads, ignore_index=True).drop_duplicates()
     if wds:
         merged.withdrawals = pd.concat(wds, ignore_index=True).drop_duplicates()
     for w in workbooks:
+        for k, v in w.extra_sheets.items():
+            if k not in merged.extra_sheets:
+                merged.extra_sheets[k] = v
         merged.notes.extend(f"[{w.name}] {n}" for n in w.notes)
     return merged
 
@@ -223,9 +235,28 @@ def build_order_lines(orders: pd.DataFrame, sku_master: pd.DataFrame) -> pd.Data
         if drop_c in lines.columns:
             lines = lines.drop(columns=[drop_c])
 
+    # หาก Seller SKU เป็นค่าว่าง ให้ fallback ไปใช้ SKU ID เพื่อให้จับคู่ต้นทุนได้อัตโนมัติ (เคส TikTok ไม่ได้ใส่ Seller SKU)
+    if "SKU ID" in lines.columns:
+        s_sku = lines["Seller SKU"].fillna("").astype(str).str.strip().replace({"nan": "", "None": ""})
+        sku_id = lines["SKU ID"].fillna("").astype(str).str.strip().replace({"nan": "", "None": ""})
+        lines["Seller SKU"] = s_sku.where(s_sku != "", sku_id)
+
     lines = lines.merge(master, on="Seller SKU", how="left")
     lines["cost_missing"] = lines["unit_cost"].isna() | (lines["unit_cost"] <= 0)
     lines["unit_cost"] = pd.to_numeric(lines["unit_cost"], errors="coerce").fillna(0.0)
+
+    # Fallback เสริม: ถ้ายังหาราคาทุนไม่เจอ ลองจับคู่ด้วยชื่อสินค้าจาก master
+    if lines["cost_missing"].any() and "Product Name" in lines.columns:
+        valid_m = master[master["unit_cost"] > 0].dropna(subset=["name"])
+        if not valid_m.empty:
+            name_map = dict(zip(valid_m["name"].str.strip(), valid_m["unit_cost"]))
+            clean_names = lines.loc[lines["cost_missing"], "Product Name"].astype(str).str.strip()
+            filled = clean_names.map(name_map)
+            can_fill = filled.notna() & (filled > 0)
+            if can_fill.any():
+                fill_idx = filled[can_fill].index
+                lines.loc[fill_idx, "unit_cost"] = filled[can_fill]
+                lines.loc[fill_idx, "cost_missing"] = False
 
     # คำนวณจำนวนขายสุทธิ และคอลัมน์ I (ราคาต่อหน่วย), คอลัมน์ J (มูลค่า)
     returned = lines["Sku Quantity of return"]
@@ -580,6 +611,9 @@ def run_pipeline(data: LoadedWorkbook, sku_master: pd.DataFrame) -> PipelineResu
         warnings=warnings,
         fee_details=fee_details,
         withdrawals=data.withdrawals,
+        raw_settlement=data.raw_settlement,
+        raw_orders=data.raw_orders,
+        extra_sheets=data.extra_sheets,
     )
 
 
@@ -596,6 +630,9 @@ def recalculate_with_skus(res: PipelineResult, sku_master: pd.DataFrame) -> Pipe
             warnings=res.warnings,
             fee_details=res.fee_details,
             withdrawals=res.withdrawals,
+            raw_settlement=res.raw_settlement,
+            raw_orders=res.raw_orders,
+            extra_sheets=res.extra_sheets,
         )
 
     derived_cols = [
@@ -636,6 +673,9 @@ def recalculate_with_skus(res: PipelineResult, sku_master: pd.DataFrame) -> Pipe
         warnings=res.warnings,
         fee_details=res.fee_details,
         withdrawals=res.withdrawals,
+        raw_settlement=res.raw_settlement,
+        raw_orders=res.raw_orders,
+        extra_sheets=res.extra_sheets,
     )
 
 

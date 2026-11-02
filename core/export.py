@@ -7,6 +7,7 @@ import re
 
 import pandas as pd
 
+from .loader import FEE_DESCRIPTIONS
 from .metrics import Summary
 from .pipeline import ensure_order_columns
 
@@ -159,6 +160,236 @@ def summary_table(s: Summary) -> pd.DataFrame:
         ]
     )
     return pd.DataFrame(rows, columns=["รายการ", "จำนวนเงิน / ค่า"])
+
+
+def format_thai_cost_filename(period_label: str) -> str:
+    """แปลงชื่องวดเป็นชื่อไฟล์ต้นทุนมาตรฐานของบริษัท เช่น '2026-09' -> 'ต้นทุน2569-09.xlsx'"""
+    clean = str(period_label).strip()
+    if not clean:
+        return "ต้นทุน.xlsx"
+
+    # ตัดช่องว่างและสัญลักษณ์แปลกปลอม
+    m = re.search(r"(\d{4})[-/](\d{1,2})", clean)
+    if m:
+        yr, mo = int(m.group(1)), int(m.group(2))
+        if yr < 2500:
+            yr += 543
+        extra = ""
+        if "ดีไวน์" in clean:
+            extra = "ดีไวน์"
+        return f"ต้นทุน{extra}{yr}-{mo:02d}.xlsx"
+
+    clean_slug = re.sub(r'[\/:*?"<>| ]', "_", clean)
+    return f"ต้นทุน_{clean_slug}.xlsx"
+
+
+def _split_order_sheets_by_month(df: pd.DataFrame, default_name: str) -> list[tuple[str, pd.DataFrame]]:
+    """แบ่งแถวคำสั่งซื้อเป็นชีตละเดือนตาม Created Time (ไฟล์ Order ของ TikTok ใช้รูปแบบวันที่ dd/mm/yyyy)
+
+    ถ้ามีเดือนเดียว หรืออ่านวันที่ไม่ได้ จะคืนชีตเดียวชื่อ default_name เหมือนเดิม
+    """
+    if df is None or df.empty or "Created Time" not in df.columns or "Order ID" not in df.columns:
+        return [(default_name, df)]
+    ids = df["Order ID"].astype(str).str.strip()
+    body = df[ids.str.fullmatch(r"\d+")].drop_duplicates()
+    months = pd.to_datetime(body["Created Time"], errors="coerce", format="mixed", dayfirst=True).dt.to_period("M")
+    valid = sorted(months.dropna().unique(), reverse=True)
+    if len(valid) <= 1:
+        return [(default_name, df)]
+    # บริษัทต้องการ Order แค่ 2 เดือนติดกันเสมอ (เช่น 8 กับ 9, 9 กับ 10, 10 กับ 11)
+    if len(valid) > 2:
+        valid = valid[:2]
+    months = months.fillna(valid[0])
+    same_month_num = len({m.month for m in valid}) < len(valid)
+    out: list[tuple[str, pd.DataFrame]] = []
+    for m in valid:
+        name = f"Order{m.year}-{m.month:02d}" if same_month_num else f"Order{m.month}"
+        out.append((name, body[months == m].reset_index(drop=True)))
+    return out
+
+
+def build_company_cost_master_excel(
+    res,
+    sku_master: pd.DataFrame,
+    period_label: str = "",
+    order_sheet_name: str | None = None,
+) -> bytes:
+    """สร้างไฟล์ Excel ต้นทุนรวมฉบับสมบูรณ์ (ต้นทุน(ปี-เดือน).xlsx)
+    โครงสร้างชีตตรงกับไฟล์ของบริษัท 100%:
+    1. รายละเอียดคำสั่งซื้อ (แทรก Col F: ยอดชำระ, Col G: ต้นทุนรวม, Col H: กำไร)
+    2. SKU (ตารางราคาทุนสินค้า)
+    3. Order (แทรก Col I: ราคาต่อหน่วย, Col J: มูลค่า)
+    4. รายงาน (TikTok Report)
+    5. บันทึกการถอน (Withdrawals)
+    6. คำอธิบายค่าธรรมเนียม (Fee Descriptions)
+    7. ads (ถ้ามี)
+    """
+    buf = BytesIO()
+
+    # 1. เตรียมชีต 'รายละเอียดคำสั่งซื้อ'
+    raw_s = getattr(res, "raw_settlement", None)
+    if raw_s is not None and not raw_s.empty:
+        settle_df = raw_s.copy()
+        # หา column ID
+        id_col = "หมายเลขคำสั่งซื้อ/การปรับ" if "หมายเลขคำสั่งซื้อ/การปรับ" in settle_df.columns else settle_df.columns[0]
+        s_oids = settle_df[id_col].astype(str).str.strip()
+
+        cogs_map = dict(zip(res.orders["order_id"].astype(str).str.strip(), res.orders["cogs"]))
+        profit_map = dict(zip(res.orders["order_id"].astype(str).str.strip(), res.orders["profit"]))
+
+        f_col_name = "ยอดการชำระเงินทั้งหมด" if "ยอดการชำระเงินทั้งหมด" in settle_df.columns else None
+        if f_col_name:
+            f_idx = settle_df.columns.get_loc(f_col_name)
+        else:
+            f_idx = min(5, len(settle_df.columns) - 1)
+
+        part1 = settle_df.iloc[:, : f_idx + 1].copy()
+        part2 = settle_df.iloc[:, f_idx + 1 :].copy()
+
+        # ลบคอลัมน์ ต้นทุนรวม และ กำไร ใน part2 หากมีติดมาเดิม
+        part2 = part2.drop(columns=[c for c in ("ต้นทุนรวม", "กำไร") if c in part2.columns], errors="ignore")
+
+        part1["ต้นทุนรวม"] = s_oids.map(cogs_map).fillna(0.0)
+        part1["กำไร"] = s_oids.map(profit_map).fillna(0.0)
+
+        final_settle = pd.concat([part1, part2], axis=1)
+    else:
+        final_settle = company_settlement_view(res.orders)
+
+    # 2. เตรียมชีต 'Order' (เช่น Order9 หรือ OrderSKUList)
+    explicit_order_sheet = bool(order_sheet_name)
+    if not order_sheet_name:
+        m = re.search(r"[-/](\d{1,2})", str(period_label))
+        if m:
+            order_sheet_name = f"Order{int(m.group(1))}"
+        else:
+            order_sheet_name = "OrderSKUList"
+
+    raw_o = getattr(res, "raw_orders", None)
+    if raw_o is not None and not raw_o.empty:
+        o_df = raw_o.copy()
+        pname_col = "Product Name" if "Product Name" in o_df.columns else None
+        if pname_col:
+            p_idx = o_df.columns.get_loc(pname_col)
+        else:
+            p_idx = min(7, len(o_df.columns) - 1)
+
+        sku_col = "Seller SKU" if "Seller SKU" in o_df.columns else "SKU ID"
+        qty_col = "Quantity" if "Quantity" in o_df.columns else None
+
+        sku_cost_map = dict(zip(sku_master["sku"].astype(str).str.strip(), sku_master["unit_cost"]))
+        seller_skus = o_df[sku_col].astype(str).str.strip() if sku_col in o_df.columns else pd.Series(0.0, index=o_df.index)
+        unit_costs = seller_skus.map(sku_cost_map).fillna(0.0)
+
+        if qty_col and qty_col in o_df.columns:
+            quantities = pd.to_numeric(o_df[qty_col], errors="coerce").fillna(0.0)
+        else:
+            quantities = pd.Series(1.0, index=o_df.index)
+
+        item_cogs = unit_costs * quantities
+
+        p1_o = o_df.iloc[:, : p_idx + 1].copy()
+        p2_o = o_df.iloc[:, p_idx + 1 :].copy()
+        p2_o = p2_o.drop(columns=[c for c in ("ราคาต่อหน่วย", "มูลค่า", "ต้นทุนต่อคำสั่งซื้อ") if c in p2_o.columns], errors="ignore")
+
+        p1_o["ราคาต่อหน่วย"] = unit_costs
+        p1_o["มูลค่า"] = item_cogs
+        final_orders = pd.concat([p1_o, p2_o], axis=1)
+    else:
+        final_orders = company_order_lines_view(res.order_lines)
+
+    # 3. เตรียมชีต 'SKU'
+    sku_cols = ["sku", "name", "category", "unit_cost", "retail_price", "promo_price", "list_price"]
+    sku_th = {
+        "sku": "รหัส",
+        "name": "ชื่อ",
+        "category": "หมวดหมู่",
+        "unit_cost": "ราคาทุน",
+        "retail_price": "ราคาปลีก",
+        "promo_price": "ราคาโปร",
+        "list_price": "ราคาตั้งขาย",
+    }
+    present_sku_cols = [c for c in sku_cols if c in sku_master.columns]
+    final_sku = sku_master[present_sku_cols].rename(columns=sku_th)
+
+    # เขียนลงไฟล์ Excel ด้วย xlsxwriter
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
+        book = xw.book
+        money_fmt = book.add_format({"num_format": "#,##0.00"})
+        int_fmt = book.add_format({"num_format": "#,##0"})
+        header_fmt = book.add_format({
+            "bold": True,
+            "bg_color": "#E0E7FF",
+            "font_color": "#1E3A8A",
+            "border": 1,
+            "align": "center",
+            "valign": "vcenter",
+        })
+
+        def _write_sheet(df: pd.DataFrame, sheet_title: str):
+            if df is None or df.empty:
+                return
+            clean_df = df.copy()
+            for col in clean_df.select_dtypes(include=["datetimetz", "datetime"]).columns:
+                clean_df[col] = clean_df[col].dt.tz_localize(None) if hasattr(clean_df[col].dt, "tz") and clean_df[col].dt.tz else clean_df[col]
+            s_name = re.sub(r"[:\\/?*\[\]]", "-", sheet_title)[:31]
+            clean_df.to_excel(xw, sheet_name=s_name, index=False)
+            ws = xw.sheets[s_name]
+            for col_idx, col_name in enumerate(clean_df.columns):
+                ws.write(0, col_idx, str(col_name), header_fmt)
+                col_data = clean_df[col_name]
+                width = min(max(len(str(col_name)), 12) + 3, 40)
+                fmt = None
+                if pd.api.types.is_float_dtype(col_data):
+                    fmt = money_fmt
+                elif pd.api.types.is_integer_dtype(col_data):
+                    fmt = int_fmt
+                ws.set_column(col_idx, col_idx, width, fmt)
+            ws.freeze_panes(1, 0)
+            ws.autofilter(0, 0, len(clean_df), len(clean_df.columns) - 1)
+
+        # ชีต 1: รายละเอียดคำสั่งซื้อ
+        _write_sheet(final_settle, "รายละเอียดคำสั่งซื้อ")
+
+        # ชีต 2: SKU
+        _write_sheet(final_sku, "SKU")
+
+        # ชีต 3: Order — แยกชีตตามเดือนที่สั่งซื้อ (เช่น Order9, Order8) เมื่อมีคำสั่งซื้อหลายเดือน
+        if explicit_order_sheet:
+            order_sheets = [(order_sheet_name, final_orders)]
+        else:
+            order_sheets = _split_order_sheets_by_month(final_orders, order_sheet_name)
+        for o_name, o_part in order_sheets:
+            _write_sheet(o_part, o_name)
+
+        # ชีต 4: รายงาน
+        extra_sheets = getattr(res, "extra_sheets", {}) or {}
+        if "รายงาน" in extra_sheets and not extra_sheets["รายงาน"].empty:
+            rep_df = extra_sheets["รายงาน"]
+            s_name = "รายงาน"
+            rep_df.to_excel(xw, sheet_name=s_name, index=False, header=False)
+        else:
+            rep_table = tiktok_report_table(res) if "tiktok_report_table" in globals() else pd.DataFrame()
+            if not rep_table.empty:
+                _write_sheet(rep_table, "รายงาน")
+
+        # ชีต 5: บันทึกการถอน
+        if res.withdrawals is not None and not res.withdrawals.empty:
+            _write_sheet(res.withdrawals, "บันทึกการถอน")
+
+        # ชีต 6: คำอธิบายค่าธรรมเนียม
+        if "คำอธิบายค่าธรรมเนียม" in extra_sheets and not extra_sheets["คำอธิบายค่าธรรมเนียม"].empty:
+            fee_df = extra_sheets["คำอธิบายค่าธรรมเนียม"]
+            fee_df.to_excel(xw, sheet_name="คำอธิบายค่าธรรมเนียม", index=False, header=False)
+        else:
+            fee_ref_df = pd.DataFrame(list(FEE_DESCRIPTIONS.items()), columns=["รายการค่าธรรมเนียม", "คำอธิบาย"])
+            _write_sheet(fee_ref_df, "คำอธิบายค่าธรรมเนียม")
+
+        # ชีต 7: ads
+        if res.ads is not None and not res.ads.empty:
+            _write_sheet(res.ads, "ads")
+
+    return buf.getvalue()
 
 
 def to_excel(summary: Summary, sheets: dict[str, pd.DataFrame]) -> bytes:

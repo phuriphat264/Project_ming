@@ -1,39 +1,70 @@
+from core.ui import init_page
+
+init_page("นำเข้า & คำนวณต้นทุนรวม", "📤")
+
 from core.reloader import ensure_fresh
 
 ensure_fresh()
 
 from io import BytesIO
 from pathlib import Path
+import re
 
 import pandas as pd
 import streamlit as st
 
-from core import db
-from core.export import company_order_lines_view, company_settlement_view
-from core.loader import LoadedWorkbook, ORDER_KEY, SETTLEMENT_KEY, load_workbook
-from core.metrics import summarize
+from core import db, order_repo
+from core.export import (
+    build_company_cost_master_excel,
+    company_order_lines_view,
+    company_settlement_view,
+    format_thai_cost_filename,
+    summary_table,
+    to_excel,
+    to_html_report,
+)
+from core.loader import (
+    FEE_DESCRIPTIONS,
+    LoadedWorkbook,
+    ORDER_KEY,
+    SETTLEMENT_KEY,
+    get_data_dir,
+    load_workbook,
+    scan_data_directory,
+)
+from core.metrics import (
+    by_category,
+    by_sku,
+    detect_anomalies,
+    summarize,
+    tiktok_report_table,
+)
 from core.pipeline import (
     ALL_PERIODS_KEY,
     combine,
     detect_period_label,
     extract_order_skus,
+    recalculate_with_skus,
     run_pipeline,
 )
 from core.ui import (
     baht,
-    init_page,
     is_admin,
     load_period_result,
     render_kpi_card,
     render_page_header,
     render_section_header,
     require_login,
+    summarize_for_period,
 )
 
-init_page("นำเข้าข้อมูล", "📤")
 user = require_login()
 
-render_page_header("นำเข้าข้อมูล Excel (โยนไฟล์คำนวณและแยกงวดอัตโนมัติ)", period=st.session_state.get("period"))
+render_page_header(
+    "ระบบจัดการและคำนวณต้นทุนรวม (TikTok Shop)",
+    subtitle="นำเข้า 2 ไฟล์ (คำสั่งซื้อ + Income) หรืออ่านจากโฟลเดอร์ data เพื่อสร้างไฟล์ต้นทุนรวม ต้นทุน(ปี-เดือน).xlsx อัตโนมัติ",
+    period=st.session_state.get("period"),
+)
 
 
 def _save_period_snapshot(period_name: str, res_obj) -> None:
@@ -50,43 +81,353 @@ def _save_period_snapshot(period_name: str, res_obj) -> None:
         warnings=res_obj.warnings,
         fee_details=res_obj.fee_details,
         withdrawals_df=res_obj.withdrawals,
+        raw_settlement_df=getattr(res_obj, "raw_settlement", None),
+        raw_orders_df=getattr(res_obj, "raw_orders", None),
     )
 
 
-col_upload, col_history = st.columns([1.4, 1.0], gap="medium")
+def _process_income_with_orders(
+    income_name: str,
+    income_bytes: bytes,
+    order_items: list[tuple[str, bytes]],
+    use_repo: bool,
+) -> None:
+    """อ่าน Income + ไฟล์ Order (1 ไฟล์หรือมากกว่า) → เติมออเดอร์เดือนก่อนจากคลัง → คำนวณ → บันทึก Order ใหม่ลงคลัง"""
+    b_inc = load_workbook(BytesIO(income_bytes), name=income_name)
+    b_ords = [load_workbook(BytesIO(ob), name=on) for on, ob in order_items]
+    if b_inc.settlement.empty:
+        raise ValueError(f"ไม่พบชีต 'รายละเอียดคำสั่งซื้อ' ในไฟล์ Income: {income_name}")
+    for b in b_ords:
+        if b.orders.empty:
+            raise ValueError(f"ไม่พบชีตคำสั่งซื้อ (Order ID / Seller SKU / Quantity) ในไฟล์: {b.name}")
 
-with col_upload:
-    with st.container(border=True):
-        render_section_header("อัปโหลดไฟล์ Excel (.xlsx) — โยนไฟล์เดียวหรือหลายเดือนพร้อมกันได้ทันที", icon="📂")
-        st.caption(
-            "รองรับชีต `SKU`, `รายละเอียดคำสั่งซื้อ`, `Order8 / Order7 / OrderSKUList`, `บันทึกการถอน` และ `ads` "
-            "— ระบบจะดึงราคาทุน คำนวณยอดชำระ-ต้นทุน-กำไร และบันทึกแยกเดือนให้อัตโนมัติทันที"
+    combined = combine([b_inc, *b_ords])
+    new_raw_orders = combined.raw_orders.copy()  # เฉพาะ Order ที่อัปโหลดรอบนี้ (ใช้บันทึกลงคลัง)
+
+    pulled = 0
+    if use_repo:
+        combined, pulled = order_repo.attach_repo_orders(combined)
+
+    if not combined.orders.empty:
+        db.add_missing_skus(extract_order_skus(combined.orders))
+
+    sku_master = db.get_skus()
+    result = run_pipeline(combined, sku_master)
+    all_names = [income_name] + [on for on, _ in order_items]
+    period = detect_period_label(result, all_names)
+
+    for fname, fbytes in [(income_name, income_bytes), *order_items]:
+        db.save_uploaded_excel(original_name=fname, raw_bytes=fbytes, period=period, uploaded_by=user["username"])
+
+    repo_stat = order_repo.save_to_repo(new_raw_orders)
+
+    if is_admin():
+        _save_period_snapshot(period, result)
+        db.set_app_state("active_period", period)
+
+    st.session_state.update(result=result, period=period, raw=combined, notes=combined.notes)
+
+    no_cost = next((w for w in result.warnings if "ไม่พบในชีต Order" in w), "")
+    msg = (
+        f"✅ คำนวณสำเร็จ งวด **{period}** → ไฟล์ต้นทุนรวม **`{format_thai_cost_filename(period)}`**  \n"
+        f"• ไฟล์ Order ที่ใส่รอบนี้: **{len(order_items)} ไฟล์** · รายละเอียดคำสั่งซื้อ **{len(result.orders):,} รายการ** · "
+        f"รายการสินค้า **{len(result.order_lines):,} แถว**  \n"
+        f"• ดึงออเดอร์เดือนก่อนจากคลังสะสม: **{pulled:,} ออเดอร์**  \n"
+        f"• บันทึกลงคลังคำสั่งซื้อสะสม: ใหม่ **{repo_stat['added']:,}** · อัปเดต **{repo_stat['replaced']:,}** · "
+        f"รวมในคลัง **{repo_stat['total']:,} ออเดอร์**"
+    )
+    st.session_state["import_flash"] = (msg, no_cost)
+    st.rerun()
+
+
+# ==============================================================================
+# ส่วนที่ 1: การกรอกไฟล์และนำเข้าข้อมูล (Data Input Section)
+# ==============================================================================
+st.markdown(
+    """
+    <div style="background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%); padding: 20px 26px; border-radius: 16px; margin-bottom: 22px; box-shadow: 0 4px 20px -2px rgba(79, 70, 229, 0.3); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div>
+            <div style="display: inline-block; background: rgba(255, 255, 255, 0.2); color: #ffffff; font-size: 0.78rem; font-weight: 800; padding: 3px 10px; border-radius: 6px; letter-spacing: 0.05em; margin-bottom: 6px;">STEP 01</div>
+            <h3 style="color: white; margin: 0; font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em;">📥 การกรอกไฟล์และนำเข้าข้อมูล (Data Input)</h3>
+            <p style="color: #e0e7ff; margin: 4px 0 0 0; font-size: 0.95rem;">
+                เลือกวิธีนำเข้า: 1) อัปโหลด 2 ไฟล์ (ไฟล์คำสั่งซื้อ + ไฟล์รายได้) หรือ 2) โหลดด่วนจากโฟลเดอร์ <code>data/</code>
+            </p>
+        </div>
+        <div style="font-size: 2.2rem; opacity: 0.9;">⚡</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# สแกนหาไฟล์ในโฟลเดอร์ data/
+data_scan = scan_data_directory()
+data_orders_files = data_scan.get("orders", [])
+data_income_files = data_scan.get("income", [])
+
+# แสดงผลลัพธ์จากการนำเข้ารอบล่าสุด (เก็บไว้ข้าม st.rerun)
+_flash = st.session_state.pop("import_flash", None)
+if _flash:
+    st.success(_flash[0])
+    if _flash[1]:
+        st.warning(f"⚠️ {_flash[1]}")
+
+# ------------------------------------------------------------------------------
+# สถานะคลังคำสั่งซื้อสะสม + คำแนะนำว่ารอบนี้ต้องใส่ไฟล์ Order กี่ไฟล์
+# ------------------------------------------------------------------------------
+repo_info = order_repo.repo_summary()
+repo_empty = repo_info["orders"] == 0
+
+with st.container(border=True):
+    rc1, rc2 = st.columns([2.2, 1.0], gap="medium")
+    with rc1:
+        st.markdown("#### 🗄️ คลังคำสั่งซื้อสะสม (Order Repository)")
+        if repo_empty:
+            st.info(
+                "🟢 **เริ่มระบบครั้งแรก:** คลังยังว่าง — กรุณาใส่ **Income 1 ไฟล์ + ไฟล์คำสั่งซื้อ 2 ไฟล์** "
+                "(เดือนก่อน + เดือนนี้ เช่น Order8 + Order9) เพราะ Income หนึ่งรอบมีออเดอร์ที่สั่งปลายเดือนก่อนปนอยู่ด้วย"
+            )
+        else:
+            latest_m = repo_info["months"]["เดือนที่สั่งซื้อ"].iloc[0]
+            st.success(
+                f"🔵 **รอบถัดไป:** ในคลังมี **{repo_info['orders']:,} ออเดอร์** (ล่าสุดเดือน **{latest_m}**) — "
+                "ใส่แค่ **Income + ไฟล์คำสั่งซื้อเดือนล่าสุด 1 ไฟล์** ได้เลย ระบบจะดึงออเดอร์เดือนก่อนจากคลังมาคิดต้นทุนให้อัตโนมัติ"
+            )
+        use_repo = st.checkbox(
+            "ดึงคำสั่งซื้อเดือนก่อนจากคลังสะสมอัตโนมัติ (แนะนำ)",
+            value=True,
+            disabled=repo_empty,
+            key="use_order_repo",
         )
-        files = st.file_uploader("เลือกหรือลากไฟล์ Excel มาวางที่นี่ (เลือกหลายไฟล์พร้อมกันได้)", type=["xlsx"], accept_multiple_files=True)
+    with rc2:
+        if not repo_empty:
+            st.dataframe(repo_info["months"], hide_index=True, width="stretch", height=150)
+            if is_admin():
+                with st.popover("🗑️ จัดการ / เลือกลบคลังคำสั่งซื้อ", width="stretch"):
+                    month_list = repo_info["months"]["เดือนที่สั่งซื้อ"].tolist()
+                    st.markdown("##### 📌 1. เลือกลบเฉพาะเดือน (ลบทีละงวด)")
+                    st.caption("เลือกเดือนที่ต้องการลบออกจากคลัง (เดือนอื่นจะยังอยู่ครบ)")
+                    del_m = st.selectbox("เลือกเดือนที่ต้องการลบ:", month_list, key="sel_del_repo_m")
+                    if st.button(f"🗑️ ยืนยันลบเดือน {del_m}", type="primary", key="btn_del_single_repo_m", width="stretch"):
+                        cnt = order_repo.delete_month_from_repo(del_m)
+                        st.toast(f"ลบออเดอร์เดือน {del_m} ออกจากคลังเรียบร้อยแล้ว ({cnt:,} ออเดอร์)")
+                        st.rerun()
+
+                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                    st.divider()
+                    st.markdown("##### ⚠️ 2. ล้างคลังทั้งหมด (Reset ทั้งระบบ)")
+                    st.caption("ลบออเดอร์ทุกเดือนทิ้งทั้งหมด (รอบถัดไปต้องใส่ไฟล์ Order 2 ไฟล์ใหม่)")
+                    if st.button("ยืนยันล้างคลังทั้งหมด", type="secondary", key="btn_clear_order_repo", width="stretch"):
+                        order_repo.clear_repo()
+                        st.toast("ล้างคลังคำสั่งซื้อสะสมทั้งหมดแล้ว")
+                        st.rerun()
+
+recommended_order_files = 2 if repo_empty else 1
+
+
+def _check_order_count(n_files: int) -> None:
+    if n_files == 1 and repo_empty:
+        st.warning(
+            "⚠️ คลังคำสั่งซื้อยังว่าง และเลือกไฟล์ Order ไว้แค่ 1 ไฟล์ — ออเดอร์ที่สั่งในเดือนก่อน "
+            "(แต่เงินเข้ารอบนี้) จะหาต้นทุนไม่เจอ แนะนำให้เพิ่มไฟล์ Order เดือนก่อนหน้าอีก 1 ไฟล์"
+        )
+
+
+tab_dual_upload, tab_from_data, tab_multi_upload = st.tabs(
+    [
+        "📤 1. อัปโหลดไฟล์ (Income + คำสั่งซื้อ) — แนะนำใช้งาน",
+        "📂 2. เลือกจากโฟลเดอร์ data/ ในเครื่อง (ทางเลือกเสริม)",
+        "📁 3. โยนไฟล์รวมหลายเดือน / ไฟล์ต้นทุนเดิม",
+    ]
+)
+
+# --- โหมด 2: อัปโหลดไฟล์จากเครื่อง ---
+with tab_dual_upload:
+    with st.container(border=True):
+        st.markdown(
+            f"""
+            <div style="background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%); border: 1px solid #c7d2fe; border-radius: 14px; padding: 16px 20px; margin-bottom: 20px;">
+                <div style="font-size: 1.1rem; font-weight: 800; color: #3730a3; display: flex; align-items: center; gap: 8px;">
+                    💡 วิธีใช้งานง่ายๆ: วางไฟล์ลง 2 ช่องด้านล่าง แล้วกดปุ่มคำนวณทันที
+                </div>
+                <div style="font-size: 0.95rem; color: #4338ca; margin-top: 6px; line-height: 1.55;">
+                    • <b>ช่องที่ 1 (ไฟล์คำสั่งซื้อ):</b> วางไฟล์ที่โหลดจากเมนู <i>"คำสั่งซื้อ"</i> ของ TikTok (ชื่อไฟล์ขึ้นต้นด้วย <code>ทั้งหมด คำสั่งซื้อ...</code>)<br>
+                    • <b>ช่องที่ 2 (ไฟล์รายได้):</b> วางไฟล์ที่โหลดจากเมนู <i>"การเงิน/รายได้"</i> ของ TikTok (ชื่อไฟล์ขึ้นต้นด้วย <code>income_...</code>)<br>
+                    • <b>คำแนะนำรอบนี้:</b> แนะนำให้ใส่ไฟล์คำสั่งซื้อ <b>{recommended_order_files} ไฟล์</b> {"(รอบแรกใส่ 2 เดือนติดกัน เช่น เดือน 8 + เดือน 9)" if repo_empty else "(รอบถัดไประบบดึงเดือนก่อนจากคลังให้เอง ใส่แค่เดือนใหม่ 1 ไฟล์พอ)"}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        u_col1, u_col2 = st.columns(2, gap="medium")
+        with u_col1:
+            st.markdown(
+                f"""
+                <div style="background:#f8fafc; border: 1.5px dashed #6366f1; border-radius: 14px; padding: 14px 16px; margin-bottom: 12px;">
+                    <div style="font-size: 1.05rem; font-weight: 800; color: #1e1b4b;">
+                        📄 ช่องที่ 1: ไฟล์รายการคำสั่งซื้อ (Order)
+                    </div>
+                    <div style="font-size: 0.88rem; color: #475569; margin-top: 4px; line-height: 1.45;">
+                        • โหลดจาก: หน้า <b>คำสั่งซื้อ (Orders)</b> ใน TikTok Shop<br>
+                        • มีรายการสินค้าและจำนวนชิ้นที่ลูกค้าสั่งซื้อ เพื่อคิดราคาทุนสินค้า
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            files_order = st.file_uploader(
+                "เลือกไฟล์คำสั่งซื้อ (ทั้งหมด คำสั่งซื้อ...xlsx) — ลากใส่ได้หลายไฟล์",
+                type=["xlsx"],
+                accept_multiple_files=True,
+                key="uploader_orders",
+                help="ไฟล์ที่มีชื่อขึ้นต้นด้วย 'ทั้งหมด คำสั่งซื้อ...' ดาวน์โหลดจากหน้า Orders ของ TikTok",
+            )
+            for fo in files_order or []:
+                st.success(f"ตรวจพบ: `{fo.name}` ({fo.size / (1024*1024):.2f} MB)")
+            if files_order:
+                _check_order_count(len(files_order))
+
+        with u_col2:
+            st.markdown(
+                """
+                <div style="background:#f8fafc; border: 1.5px dashed #0ea5e9; border-radius: 14px; padding: 14px 16px; margin-bottom: 12px;">
+                    <div style="font-size: 1.05rem; font-weight: 800; color: #082f49;">
+                        💰 ช่องที่ 2: ไฟล์รายได้และการเงิน (Income)
+                    </div>
+                    <div style="font-size: 0.88rem; color: #475569; margin-top: 4px; line-height: 1.45;">
+                        • โหลดจาก: หน้า <b>การเงิน > รายได้ (Finances / Settlements)</b> ใน TikTok Shop<br>
+                        • มียอดเงินที่ TikTok โอนจริง และค่าธรรมเนียมต่างๆ
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            file_income = st.file_uploader(
+                "เลือกไฟล์รายได้ (income_...xlsx) — 1 ไฟล์",
+                type=["xlsx"],
+                key="uploader_income",
+                help="ไฟล์ที่มีชื่อขึ้นต้นด้วย 'income_...' ดาวน์โหลดจากหน้า Finances ของ TikTok",
+            )
+            if file_income:
+                st.success(f"ตรวจพบ: `{file_income.name}` ({file_income.size / (1024*1024):.2f} MB)")
+
+        can_process_dual = bool(files_order and file_income)
+        if st.button(
+            "⚙️ เริ่มคำนวณและสร้างไฟล์ต้นทุนรวมทันที (Calculate & Build Master Cost File)",
+            type="primary",
+            width="stretch",
+            disabled=not can_process_dual,
+            key="btn_process_dual",
+        ):
+            with st.spinner("กำลังอ่านชีต จับคู่รหัสสินค้า และคำนวณต้นทุน-กำไร..."):
+                try:
+                    _process_income_with_orders(
+                        income_name=file_income.name,
+                        income_bytes=file_income.getvalue(),
+                        order_items=[(fo.name, fo.getvalue()) for fo in files_order],
+                        use_repo=use_repo,
+                    )
+                except Exception as e:
+                    st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
+
+# --- โหมด 1: อ่านจากโฟลเดอร์ data/ ---
+with tab_from_data:
+    with st.container(border=True):
+        st.markdown("#### 📂 ตรวจพบไฟล์ในโฟลเดอร์ `data/`")
+        col_d1, col_d2 = st.columns(2, gap="medium")
+
+        with col_d1:
+            st.markdown(f"📄 **1. ไฟล์รายการคำสั่งซื้อ (Order / OrderSKUList)** — แนะนำ {recommended_order_files} ไฟล์")
+            if data_orders_files:
+                order_names = [f["name"] for f in data_orders_files]
+                # ค่าเริ่มต้น: ไฟล์ล่าสุดตามชื่อ (ชื่อไฟล์ TikTok มีวันที่ export) จำนวนตามคำแนะนำ
+                default_orders = sorted(order_names, reverse=True)[:recommended_order_files]
+                order_choices = st.multiselect(
+                    "เลือกไฟล์คำสั่งซื้อจากโฟลเดอร์ data (เลือกได้หลายไฟล์):",
+                    options=order_names,
+                    default=default_orders,
+                    key=f"sel_data_order_files_{recommended_order_files}",
+                )
+                for oc in order_choices:
+                    info = next(f for f in data_orders_files if f["name"] == oc)
+                    st.caption(f"• `data/{oc}` · {info['size_str']}")
+                _check_order_count(len(order_choices))
+            else:
+                st.warning("⚠️ ไม่พบไฟล์คำสั่งซื้อในโฟลเดอร์ `data/` (ชื่อไฟล์ควรมีคำว่า 'คำสั่งซื้อ' หรือ 'Order')")
+                order_choices = []
+
+        with col_d2:
+            st.markdown("💰 **2. ไฟล์รายได้และการเงิน (Income / รายละเอียดคำสั่งซื้อ)**")
+            if data_income_files:
+                income_choice = st.selectbox(
+                    "เลือกไฟล์ Income จากโฟลเดอร์ data:",
+                    options=[f["name"] for f in data_income_files],
+                    index=0,
+                    key="sel_data_income_file",
+                )
+                sel_income_info = next(f for f in data_income_files if f["name"] == income_choice)
+                st.caption(f"ขนาดไฟล์: `{sel_income_info['size_str']}` · ตำแหน่ง: `data/{income_choice}`")
+            else:
+                st.warning("⚠️ ไม่พบไฟล์ Income ในโฟลเดอร์ `data/` (ชื่อไฟล์ควรมีคำว่า 'income' หรือ 'รายได้')")
+                income_choice = None
+
+        can_load_data = bool(order_choices and income_choice)
+        b_load_data = st.button(
+            "🚀 อ่านข้อมูลจากโฟลเดอร์ data และคำนวณต้นทุนทันที",
+            type="primary",
+            width="stretch",
+            disabled=not can_load_data,
+            key="btn_load_data_folder",
+        )
+
+        if b_load_data and can_load_data:
+            with st.spinner("กำลังโหลดไฟล์จากโฟลเดอร์ data และคำนวณยอดชำระ-ต้นทุน-กำไร..."):
+                try:
+                    data_dir = get_data_dir()
+                    _process_income_with_orders(
+                        income_name=income_choice,
+                        income_bytes=(data_dir / income_choice).read_bytes(),
+                        order_items=[(oc, (data_dir / oc).read_bytes()) for oc in order_choices],
+                        use_repo=use_repo,
+                    )
+                except Exception as e:
+                    st.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
+
+# --- โหมด 3: โยนไฟล์รวมหลายเดือน / ไฟล์เดิม ---
+with tab_multi_upload:
+    with st.container(border=True):
+        st.markdown("#### 📁 โยนไฟล์ Excel เดียวหรือหลายไฟล์พร้อมกัน")
+        st.caption("รองรับไฟล์ต้นทุนเดิมที่มีชีตครบ หรือโยนหลายเดือนพร้อมกันเพื่อแยกงวดอัตโนมัติ")
+        multi_files = st.file_uploader(
+            "เลือกไฟล์ Excel (.xlsx)",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            key="uploader_multi",
+        )
 
         upload_mode = "auto"
-        if files and len(files) > 1:
+        if multi_files and len(multi_files) > 1:
             mode_choice = st.radio(
                 "รูปแบบการจัดการเมื่อโยนหลายไฟล์พร้อมกัน:",
                 [
-                    "⚡ อัตโนมัติ (แนะนำ — แยกบันทึกเป็นรายเดือน/รายร้านให้อัตโนมัติ และจับคู่ไฟล์แยก Settlement+Order ให้เอง)",
+                    "⚡ อัตโนมัติ (แยกบันทึกเป็นรายเดือน/รายร้านให้อัตโนมัติ)",
                     "📅 แยกบันทึกเป็นคนละงวดตามแต่ละไฟล์",
                     "🔗 รวมทุกไฟล์ที่โยนเข้ามาเข้าเป็นงวดเดียวกัน",
                 ],
                 index=0,
+                key="multi_mode_choice",
             )
             if mode_choice.startswith("📅"):
                 upload_mode = "split"
             elif mode_choice.startswith("🔗"):
                 upload_mode = "merge"
 
-        if files and st.button("⚙️ คำนวณและบันทึกข้อมูลทันที", type="primary", width="stretch"):
-            with st.spinner("กำลังอ่านชีต จับคู่รหัส SKU คำนวณยอดชำระ-ต้นทุน-กำไร และบันทึกงวดอัตโนมัติ..."):
+        if multi_files and st.button("⚙️ ประมวลผลไฟล์ทันที", type="primary", width="stretch", key="btn_process_multi"):
+            with st.spinner("กำลังอ่านชีตและคำนวณต้นทุน-กำไร..."):
                 try:
-                    raw_payloads = [(f.name, f.getvalue()) for f in files]
+                    raw_payloads = [(f.name, f.getvalue()) for f in multi_files]
                     books = [load_workbook(BytesIO(raw_bytes), name=fname) for fname, raw_bytes in raw_payloads]
 
-                    # 1. นำเข้าตาราง SKU จากทุกไฟล์ก่อน เพื่อให้ฐานข้อมูลราคาทุนครบสมบูรณ์ที่สุด
                     if is_admin():
                         for b in books:
                             if not b.sku.empty:
@@ -104,7 +445,6 @@ with col_upload:
                                     )
                                 )
 
-                    # 2. รวมชีต Order จากทุกไฟล์ที่โยนเข้ามาเพื่อดึง SKU ตกหล่น และช่วยจับคู่ออเดอร์ข้ามเดือนอัตโนมัติ
                     all_orders_frames = [b.orders for b in books if not b.orders.empty]
                     if all_orders_frames:
                         seq_o = []
@@ -125,8 +465,6 @@ with col_upload:
                         shared_orders_pool = pd.DataFrame()
 
                     sku_master = db.get_skus()
-
-                    # 3. ตัดสินใจว่าจะแยกงวดตามไฟล์ หรือรวมเป็นงวดเดียว
                     settle_books = [b for b in books if not b.settlement.empty]
                     usable_books = [b for b in books if (not b.settlement.empty or not b.orders.empty)]
 
@@ -135,8 +473,6 @@ with col_upload:
                         if upload_mode == "split" and len(usable_books) > 1:
                             should_split = True
                         elif upload_mode == "auto":
-                            # ถ้ามีไฟล์ที่มีรายละเอียดคำสั่งซื้อตั้งแต่ 2 ไฟล์ขึ้นไป (เช่น โยนหลายเดือน หรือ 2 ร้านพร้อมกัน) ให้แยกงวดอัตโนมัติ
-                            # หรือถ้าไม่มีไฟล์ไหนมี settlement เลยแต่มีไฟล์ Order หลายเดือน ก็แยกงวดให้เช่นกัน
                             if len(settle_books) >= 2 or (len(settle_books) == 0 and len(usable_books) >= 2):
                                 should_split = True
 
@@ -158,70 +494,15 @@ with col_upload:
                             db.set_app_state("active_period", period)
 
                         st.session_state.update(result=result, period=period, raw=data, notes=data.notes)
-                        save_msg = f" และบันทึกงวด **{period}** ลงระบบเรียบร้อยแล้ว" if is_admin() else ""
-                        st.success(
-                            f"✅ คำนวณสำเร็จ: {len(result.orders):,} รายการในรายละเอียดคำสั่งซื้อ · "
-                            f"{len(result.order_lines):,} รายการในชีต Order{save_msg}"
-                        )
+                        st.success(f"✅ คำนวณสำเร็จและบันทึกงวด **{period}** เรียบร้อยแล้ว")
+                        st.rerun()
                     else:
-                        target_items: list[tuple[str, bytes, LoadedWorkbook]] = []
-                        target_settle_only = len(settle_books) >= 2
-                        for (fname, raw_bytes), b in zip(raw_payloads, books):
-                            if target_settle_only and not b.settlement.empty:
-                                target_items.append((fname, raw_bytes, b))
-                            elif not target_settle_only and (not b.settlement.empty or not b.orders.empty):
-                                target_items.append((fname, raw_bytes, b))
-                            else:
-                                # ไฟล์เสริม เช่น ไฟล์ SKU ล้วน หรือ Order เดือนก่อนหน้า เก็บสำเนาไว้ด้วย
-                                db.save_uploaded_excel(
-                                    original_name=fname,
-                                    raw_bytes=raw_bytes,
-                                    period="ไฟล์ประกอบ",
-                                    uploaded_by=user["username"],
-                                )
-
-                        saved_periods: list[str] = []
-                        all_notes: list[str] = []
-                        used_names: set[str] = set()
+                        saved_periods = []
                         last_res = None
-
-                        for fname, raw_bytes, b in target_items:
-                            # เติมรายการ Order ข้ามเดือนจากไฟล์อื่นที่โยนมาพร้อมกัน (เฉพาะ Order ID ที่อยู่ใน Settlement ของไฟล์นี้)
-                            wb_work = LoadedWorkbook(
-                                name=b.name,
-                                settlement=b.settlement,
-                                orders=b.orders,
-                                ads=b.ads,
-                                sku=b.sku,
-                                withdrawals=b.withdrawals,
-                                notes=list(b.notes),
-                            )
-                            if not wb_work.settlement.empty and not shared_orders_pool.empty:
-                                settle_ids = set(wb_work.settlement[SETTLEMENT_KEY].astype(str).str.strip())
-                                extra_o = shared_orders_pool[shared_orders_pool[ORDER_KEY].astype(str).isin(settle_ids)]
-                                if not extra_o.empty:
-                                    seq_pair = []
-                                    for of in (wb_work.orders, extra_o):
-                                        if not of.empty:
-                                            of_c = of.copy()
-                                            sc = "SKU ID" if "SKU ID" in of_c.columns else "Seller SKU"
-                                            of_c["_line_seq"] = of_c.groupby([ORDER_KEY, sc], dropna=False).cumcount()
-                                            seq_pair.append(of_c)
-                                    merged_o = pd.concat(seq_pair, ignore_index=True)
-                                    sc = "SKU ID" if "SKU ID" in merged_o.columns else "Seller SKU"
-                                    wb_work.orders = (
-                                        merged_o.drop_duplicates(subset=[ORDER_KEY, sc, "_line_seq"], keep="first")
-                                        .drop(columns=["_line_seq"])
-                                        .reset_index(drop=True)
-                                    )
-
-                            res_i = run_pipeline(wb_work, sku_master)
+                        all_notes = []
+                        for fname, raw_bytes, b in zip(raw_payloads, books):
+                            res_i = run_pipeline(b, sku_master)
                             p_name = detect_period_label(res_i, fname)
-                            if p_name in used_names:
-                                stem = Path(fname).stem[:24]
-                                p_name = f"{p_name} ({stem})"
-                            used_names.add(p_name)
-
                             db.save_uploaded_excel(
                                 original_name=fname,
                                 raw_bytes=raw_bytes,
@@ -230,9 +511,8 @@ with col_upload:
                             )
                             if is_admin():
                                 _save_period_snapshot(p_name, res_i)
-
                             saved_periods.append(p_name)
-                            all_notes.extend(f"[{fname}] {n}" for n in wb_work.notes)
+                            all_notes.extend(f"[{fname}] {n}" for n in b.notes)
                             last_res = res_i
 
                         if is_admin() and len(saved_periods) >= 2:
@@ -243,178 +523,456 @@ with col_upload:
                                 period=ALL_PERIODS_KEY,
                                 notes=all_notes,
                             )
-                            st.success(
-                                f"✅ คำนวณและแยกบันทึกสำเร็จ **{len(saved_periods)} งวด**: "
-                                f"{', '.join(saved_periods)} — ตอนนี้เปิดมุมมอง **📊 สรุปรวมทุกงวดทั้งหมด** ให้แล้ว "
-                                "(สลับดูแยกแต่ละเดือนได้ที่เมนูด้านขวาหรือหน้าแดชบอร์ดทันที)"
-                            )
-                        elif last_res is not None:
-                            p_final = saved_periods[-1]
-                            if is_admin():
-                                db.set_app_state("active_period", p_final)
-                            st.session_state.update(result=last_res, period=p_final, notes=all_notes)
-                            st.success(f"✅ คำนวณและบันทึกงวด **{p_final}** สำเร็จ!")
+                            st.success(f"✅ แยกบันทึกสำเร็จ **{len(saved_periods)} งวด**: {', '.join(saved_periods)}")
+                            st.rerun()
                 except Exception as e:
                     st.error(f"เกิดข้อผิดพลาด: {e}")
 
-with col_history:
-    with st.container(border=True):
-        render_section_header("เลือกดูแยกตามเดือน หรือ สรุปรวมทั้งหมด", icon="🗂️")
-        snapshots = db.list_snapshots()
-        if snapshots.empty:
-            st.caption("ยังไม่มีข้อมูลงวดที่บันทึกไว้ กรุณาโยนไฟล์ Excel ด้านซ้าย ระบบจะบันทึกให้อัตโนมัติทันที")
-        else:
-            saved_months = snapshots["month"].tolist()
-            order_map = dict(zip(snapshots["month"], snapshots["order_count"]))
-            view_options = [ALL_PERIODS_KEY] + saved_months
-            cur_p = st.session_state.get("period", "")
-            default_idx = view_options.index(cur_p) if cur_p in view_options else 0
+st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
 
-            selected_snap = st.selectbox(
-                "เลือกงวดเดือน หรือ สรุปรวมทุกงวด:",
-                view_options,
-                index=default_idx,
-                format_func=lambda m: (
-                    f"📊 สรุปรวมทุกงวดทั้งหมด ({len(saved_months)} งวด)"
-                    if m == ALL_PERIODS_KEY
-                    else f"📅 งวด {m} ({int(order_map.get(m, 0)):,} ออเดอร์)"
-                ),
-            )
-            b_open, b_del = st.columns([1.5, 1])
-            if b_open.button("📂 เปิดดูข้อมูลนี้", type="primary", width="stretch"):
-                loaded_res = load_period_result(selected_snap)
-                if loaded_res is not None:
-                    db.set_app_state("active_period", selected_snap)
-                    st.session_state.update(result=loaded_res, period=selected_snap, notes=[])
-                    st.rerun()
-            if is_admin() and b_del.button(
-                "🗑️ ลบงวดนี้" if selected_snap != ALL_PERIODS_KEY else "🗑️ ลบข้อมูลทุกงวด",
-                type="secondary",
-                width="stretch",
-            ):
-                if selected_snap == ALL_PERIODS_KEY:
-                    for m in db.list_snapshots()["month"].tolist():
-                        db.delete_snapshot(m)
-                    db.set_app_state("active_period", "")
-                    for k in ("result", "period", "raw", "notes"):
-                        st.session_state.pop(k, None)
-                    st.toast("ลบข้อมูลงวดทั้งหมดเรียบร้อยแล้ว")
-                else:
-                    db.delete_snapshot(selected_snap)
-                    if st.session_state.get("period") in (selected_snap, ALL_PERIODS_KEY):
-                        for k in ("result", "period", "raw", "notes"):
-                            st.session_state.pop(k, None)
-                    db.set_app_state("active_period", "")
-                    st.toast(f"ลบงวด {selected_snap} แล้ว")
+
+# ==============================================================================
+# สลับเลือกดูงวด / ดึงข้อมูล Snapshot ที่เคยบันทึกไว้
+# ==============================================================================
+snapshots = db.list_snapshots()
+saved_months = snapshots["month"].tolist() if not snapshots.empty else []
+cur_period = st.session_state.get("period", "")
+
+if not snapshots.empty:
+    with st.container(border=True):
+        col_sel_p, col_btn_open, col_btn_del = st.columns([2.5, 1.0, 0.8], gap="small")
+        view_options = [ALL_PERIODS_KEY] + saved_months
+        default_idx = view_options.index(cur_period) if cur_period in view_options else 0
+
+        selected_snap = col_sel_p.selectbox(
+            "📅 สลับเลือกดูข้อมูลงวดเดือน หรือ ดูสรุปรวมทุกงวด:",
+            view_options,
+            index=default_idx,
+            key="active_snapshot_selector",
+        )
+        if col_btn_open.button("📂 เปิดดูข้อมูลนี้", type="primary", width="stretch", key="btn_open_snap"):
+            loaded_res = load_period_result(selected_snap)
+            if loaded_res is not None:
+                db.set_app_state("active_period", selected_snap)
+                st.session_state.update(result=loaded_res, period=selected_snap, notes=[])
                 st.rerun()
 
-            if is_admin():
-                st.divider()
-                q1, q2 = st.columns(2)
-                q1.page_link("pages/1_📊_แดชบอร์ด.py", label="ไปหน้าแดชบอร์ด →", icon="📊", width="stretch")
-                q2.page_link("pages/5_📑_รายงาน.py", label="ไปหน้ารายงาน →", icon="📑", width="stretch")
-
-# กล่องแสดงและดาวน์โหลดสำเนาไฟล์ Excel ต้นฉบับที่เคยอัปโหลดไว้ใน data/uploads/
-uploads_df = db.list_uploaded_excels()
-if not uploads_df.empty:
-    with st.expander(f"📁 สำเนาไฟล์ Excel ต้นฉบับที่เก็บไว้ในเครื่อง ({len(uploads_df)} ไฟล์ — โฟลเดอร์ data/uploads/)", expanded=False):
-        sel_col, dl_col, del_col = st.columns([2.5, 1.2, 0.9])
-        selected_id = sel_col.selectbox(
-            "เลือกไฟล์สำเนา:",
-            uploads_df["id"].tolist(),
-            label_visibility="collapsed",
-            format_func=lambda fid: (
-                f"[{uploads_df.loc[uploads_df['id'] == fid, 'period'].values[0] or '-'}] "
-                f"{uploads_df.loc[uploads_df['id'] == fid, 'original_name'].values[0]} "
-                f"({uploads_df.loc[uploads_df['id'] == fid, 'size_bytes'].values[0] / 1024:,.0f} KB · "
-                f"อัปโหลด {uploads_df.loc[uploads_df['id'] == fid, 'uploaded_at'].values[0]})"
-            ),
-        )
-        found = db.get_uploaded_excel_path(selected_id)
-        if found:
-            orig_name, file_path = found
-            dl_col.download_button(
-                "⬇️ ดาวน์โหลดไฟล์ต้นฉบับ",
-                file_path.read_bytes(),
-                file_name=orig_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width="stretch",
-            )
-        if is_admin() and del_col.button("🗑️ ลบสำเนา", width="stretch"):
-            db.delete_uploaded_excel(selected_id)
-            st.toast("ลบไฟล์สำเนาเรียบร้อยแล้ว")
+        if is_admin() and col_btn_del.button("🗑️ ลบงวดนี้", type="secondary", width="stretch", key="btn_del_snap"):
+            if selected_snap == ALL_PERIODS_KEY:
+                for m in saved_months:
+                    db.delete_snapshot(m)
+                db.set_app_state("active_period", "")
+                for k in ("result", "period", "raw", "notes"):
+                    st.session_state.pop(k, None)
+                st.toast("ลบข้อมูลงวดทั้งหมดเรียบร้อยแล้ว")
+            else:
+                db.delete_snapshot(selected_snap)
+                if cur_period in (selected_snap, ALL_PERIODS_KEY):
+                    for k in ("result", "period", "raw", "notes"):
+                        st.session_state.pop(k, None)
+                db.set_app_state("active_period", "")
+                st.toast(f"ลบงวด {selected_snap} แล้ว")
             st.rerun()
 
 res = st.session_state.get("result")
 if res is None:
+    st.info("💡 กรุณาเลือกอ่านข้อมูลจากโฟลเดอร์ data/ หรืออัปโหลดไฟล์ในส่วนที่ 1 เพื่อเริ่มดูข้อมูลและดาวน์โหลดไฟล์ต้นทุนรวม")
     st.stop()
 
 cur_period = st.session_state.get("period", "ไม่ทราบงวด")
-o = res.orders
-notes = st.session_state.get("notes", [])
+sku_master_df = db.get_skus()
 
-if notes:
-    st.caption("ชีตที่ตรวจพบ: " + " · ".join(notes))
+# ตรวจสอบและคำนวณต้นทุนใหม่ทันทีถ้าฐานข้อมูล SKU มีการอัปเดตราคา
+if res is not None and not res.missing_skus.empty and not sku_master_df.empty:
+    missing_codes = set(res.missing_skus["sku"].astype(str).str.strip())
+    filled = sku_master_df[sku_master_df["sku"].astype(str).str.strip().isin(missing_codes) & (sku_master_df["unit_cost"] > 0)]
+    if not filled.empty:
+        res = recalculate_with_skus(res, sku_master_df)
+        st.session_state["result"] = res
 
-c1, c2, c3, c4 = st.columns(4, gap="medium")
-sold_only = o[o["txn_type"] == "คำสั่งซื้อ"]
-order_only_h = float(sold_only["profit"].sum()) if not sold_only.empty else float(o["profit"].sum())
-net_h = float(o["profit"].sum())
-with c1:
-    render_kpi_card("ยอดการชำระเงินทั้งหมด (F)", baht(o["net_settlement"].sum()), f"รายได้ทั้งหมด {baht(o['net_sales'].sum())}", icon="💵")
-with c2:
-    render_kpi_card("ต้นทุนสินค้ารวม (G)", baht(o["cogs"].sum()), f"คำสั่งซื้อ {len(sold_only):,} รายการ", icon="📦")
-with c3:
-    h_note = f"ก่อนโฆษณา GMV: {baht(order_only_h)}" if abs(order_only_h - net_h) >= 1 else "ยอดชำระ (F) − ต้นทุนรวม (G)"
-    render_kpi_card("กำไรหลังหักโฆษณา GMV (H สุทธิ)", baht(net_h), h_note, delta_positive=net_h >= 0, icon="📊")
-with c4:
-    miss_cnt = len(res.missing_skus)
-    render_kpi_card("SKU ที่ยังไม่มีราคาทุน", f"{miss_cnt:,} รหัส", "พร้อมคำนวณครบ" if miss_cnt == 0 else "ควรเพิ่มราคาทุน", icon="✅" if miss_cnt == 0 else "⚠️")
+orders_df = res.orders
+order_lines_df = res.order_lines
 
-if is_admin() and cur_period != ALL_PERIODS_KEY:
-    with st.expander("✏️ เปลี่ยนชื่องวด หรือ บันทึกซ้ำในชื่องวดอื่น (เช่น แยกชื่อร้าน)", expanded=False):
-        s_col1, s_col2 = st.columns([1.4, 1.2], gap="small")
-        save_name = s_col1.text_input(
-            "ชื่องวดที่จะบันทึก:",
-            value=cur_period,
-            placeholder="เช่น 2026-08 (ร้านหลัก) หรือ 2026-08 (ดีไวน์)",
-        ).strip().replace("/", "-")
-        s_col2.markdown("<div style='height:30px;'></div>", unsafe_allow_html=True)
-        if s_col2.button(f"💾 บันทึกเป็นงวด '{save_name}'", type="primary", width="stretch") and save_name:
-            _save_period_snapshot(save_name, res)
-            db.set_app_state("active_period", save_name)
-            st.session_state["period"] = save_name
-            st.success(f"บันทึกงวด '{save_name}' เรียบร้อยแล้ว!")
-            st.rerun()
+# คำนวณสรุปงวด
+fixed = db.total_fixed_cost(cur_period)
+comm_pct = db.get_comm_pct(cur_period)
+s_metric = summarize_for_period(res, cur_period) if cur_period else summarize(res, fixed_costs=fixed, comm_pct=comm_pct)
 
-if not res.missing_skus.empty:
-    with st.container(border=True):
-        render_section_header("รายการสินค้าที่ยังไม่มีราคาทุน (แทนค่า #N/A เดิมใน Excel)", icon="⚠️")
+
+# ==============================================================================
+# ส่วนที่ 2: การเลือกดูและตรวจสอบข้อมูล (Data View & Inspection Section)
+# ==============================================================================
+st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+st.markdown(
+    """
+    <div style="background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); padding: 20px 26px; border-radius: 16px; margin-bottom: 22px; box-shadow: 0 4px 20px -2px rgba(2, 132, 199, 0.3); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div>
+            <div style="display: inline-block; background: rgba(255, 255, 255, 0.2); color: #ffffff; font-size: 0.78rem; font-weight: 800; padding: 3px 10px; border-radius: 6px; letter-spacing: 0.05em; margin-bottom: 6px;">STEP 02</div>
+            <h3 style="color: white; margin: 0; font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em;">🔍 ตรวจสอบตัวเลขและรายการคำสั่งซื้อ (Data Inspection)</h3>
+            <p style="color: #e0f2fe; margin: 4px 0 0 0; font-size: 0.95rem;">
+                ตรวจสอบยอดชำระเงิน (Col F), ต้นทุนรวม (Col G), กำไร (Col H), รายการสินค้า (Col I, J) และค้นหาข้อมูล
+            </p>
+        </div>
+        <div style="font-size: 2.2rem; opacity: 0.9;">📊</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# KPI Cards
+k1, k2, k3, k4 = st.columns(4, gap="medium")
+sold_only = orders_df[orders_df["txn_type"] == "คำสั่งซื้อ"] if not orders_df.empty else orders_df
+total_settlement = float(orders_df["net_settlement"].sum()) if not orders_df.empty else 0.0
+total_cogs = float(orders_df["cogs"].sum()) if not orders_df.empty else 0.0
+total_profit = float(orders_df["profit"].sum()) if not orders_df.empty else 0.0
+total_sales = float(orders_df["net_sales"].sum()) if not orders_df.empty else 0.0
+missing_sku_cnt = len(res.missing_skus) if not res.missing_skus.empty else 0
+
+with k1:
+    render_kpi_card(
+        "1. เงินที่ TikTok โอนจริง (Col F)",
+        baht(total_settlement),
+        f"รายได้ยอดขายสุทธิ: {baht(total_sales)}",
+        delta="เงินเข้าจริง",
+        delta_positive=True,
+        icon="💵",
+    )
+with k2:
+    render_kpi_card(
+        "2. ต้นทุนสินค้ารวม (Col G)",
+        baht(total_cogs),
+        f"คำสั่งซื้อ: {len(sold_only):,} ออเดอร์",
+        delta="ทุนสินค้าขาย",
+        icon="📦",
+    )
+with k3:
+    margin_pct = (total_profit / total_sales * 100) if total_sales > 0 else 0.0
+    render_kpi_card(
+        "3. กำไรสุทธิแท้จริง (Col H)",
+        baht(total_profit),
+        f"คิดเป็น {margin_pct:.1f}% ของยอดขาย (F − G)",
+        delta="กำไรสุทธิ" if total_profit >= 0 else "ขาดทุน",
+        delta_positive=total_profit >= 0,
+        icon="📈",
+    )
+with k4:
+    render_kpi_card(
+        "4. สินค้าที่ยังไม่มีราคาทุน",
+        f"{missing_sku_cnt:,} ตัว",
+        "ต้นทุนครบ 100% แม่นยำ" if missing_sku_cnt == 0 else "ต้องเพิ่มราคาทุนในหน้า SKU",
+        delta="พร้อมส่งออก" if missing_sku_cnt == 0 else "ต้องตรวจ",
+        delta_positive=missing_sku_cnt == 0,
+        icon="✅" if missing_sku_cnt == 0 else "⚠️",
+    )
+
+# แท็บเลือกดูข้อมูล
+tab_v_settle, tab_v_orders, tab_v_sku, tab_v_withdraw, tab_v_fees = st.tabs(
+    [
+        "📑 1. รายละเอียดคำสั่งซื้อ (Settlement: F, G, H)",
+        "📦 2. รายการสินค้า Order (ราคาต่อหน่วย I, มูลค่า J)",
+        "⚠️ 3. ตรวจสอบราคาทุนสินค้า (SKU Master)",
+        "🏦 4. บันทึกการถอนเงิน (Withdrawals)",
+        "📋 5. สรุปค่าธรรมเนียม TikTok Shop",
+    ]
+)
+
+with tab_v_settle:
+    st.markdown("##### 📑 ตารางรายละเอียดคำสั่งซื้อ (คำนวณ Col F: ยอดชำระ, Col G: ต้นทุนรวม, Col H: กำไร แล้ว)")
+    st.info(
+        "💡 **คำอธิบาย:** แถวที่ขึ้น **ต้นทุนรวม (G) = 0** และ **ยอดชำระ (F) = 0** คือ **ออเดอร์ที่ลูกค้ายกเลิกคำสั่งซื้อ / ขอคืนเงินเต็มจำนวน** "
+        "(ร้านค้าไม่ได้จัดส่งสินค้าจริง จึงไม่มีต้นทุนสินค้าสูญเสีย) — ระบบตั้งค่าเริ่มต้นให้แสดงเฉพาะคำสั่งซื้อที่มีการรับเงินและคำนวณต้นทุนจริง "
+        "โดยสามารถสลับดูทั้งหมดได้ที่ตัวกรองด้านล่างครับ"
+    )
+
+    f_c1, f_c2, f_c3, f_c4 = st.columns([1.3, 1.4, 1.1, 1.2])
+    with f_c1:
+        search_oid = st.text_input("🔍 ค้นหาหมายเลขคำสั่งซื้อ:", placeholder="พิมพ์ Order ID...", key="search_oid_input")
+    with f_c2:
+        filter_profit = st.selectbox(
+            "กรองสถานะคำสั่งซื้อ:",
+            [
+                "⭐ แสดงเฉพาะออเดอร์ที่มีการรับเงิน/คำนวณต้นทุน (ตัดออเดอร์ยกเลิกออก)",
+                "แสดงทั้งหมด (รวมออเดอร์ยกเลิก 0 บาท)",
+                "เฉพาะออเดอร์ที่มีกำไร (> 0)",
+                "เฉพาะออเดอร์ที่ขาดทุน (< 0)",
+                "เฉพาะออเดอร์ที่ยกเลิก/คืนเงินเต็มจำนวน (ยอด 0 บาท)",
+                "เฉพาะรายการชำระค่าโฆษณา GMV",
+            ],
+            index=0,
+            key="filter_profit_sel",
+        )
+    with f_c3:
+        filter_txn = st.selectbox(
+            "ประเภทธุรกรรม:",
+            ["ทั้งหมด"] + (orders_df["txn_type"].unique().tolist() if not orders_df.empty else []),
+            index=0,
+            key="filter_txn_sel",
+        )
+    with f_c4:
+        sort_by = st.selectbox(
+            "จัดเรียงลำดับ:",
+            [
+                "ต้นทุนรวมมากสุด → น้อยสุด",
+                "ยอดชำระมากสุด → น้อยสุด",
+                "กำไรมากสุด → น้อยสุด",
+                "ตามลำดับเดิมในไฟล์",
+            ],
+            index=0,
+            key="sort_by_sel",
+        )
+
+    settle_display = company_settlement_view(orders_df)
+    col_cogs = "ต้นทุนรวม (G)"
+    col_settle = "ยอดการชำระเงินทั้งหมด (F)"
+    col_profit = "กำไร (H = F - G)"
+
+    if filter_profit.startswith("⭐"):
+        if col_cogs in settle_display.columns and col_settle in settle_display.columns:
+            settle_display = settle_display[(settle_display[col_settle] != 0) | (settle_display[col_cogs] != 0)]
+    elif filter_profit == "เฉพาะออเดอร์ที่มีกำไร (> 0)":
+        if col_profit in settle_display.columns:
+            settle_display = settle_display[settle_display[col_profit] > 0]
+    elif filter_profit == "เฉพาะออเดอร์ที่ขาดทุน (< 0)":
+        if col_profit in settle_display.columns:
+            settle_display = settle_display[settle_display[col_profit] < 0]
+    elif filter_profit == "เฉพาะออเดอร์ที่ยกเลิก/คืนเงินเต็มจำนวน (ยอด 0 บาท)":
+        if col_settle in settle_display.columns and col_cogs in settle_display.columns:
+            settle_display = settle_display[(settle_display[col_settle] == 0) & (settle_display[col_cogs] == 0)]
+    elif filter_profit == "เฉพาะรายการชำระค่าโฆษณา GMV":
+        settle_display = settle_display[
+            settle_display["ประเภทธุรกรรม"].astype(str).str.contains("GMV|โฆษณา", case=False, na=False)
+        ]
+
+    if filter_txn != "ทั้งหมด":
+        settle_display = settle_display[settle_display["ประเภทธุรกรรม"] == filter_txn]
+
+    if search_oid.strip():
+        settle_display = settle_display[
+            settle_display["หมายเลขคำสั่งซื้อ/การปรับ"].astype(str).str.contains(search_oid.strip(), case=False, na=False)
+        ]
+
+    if sort_by == "ต้นทุนรวมมากสุด → น้อยสุด" and col_cogs in settle_display.columns:
+        settle_display = settle_display.sort_values(col_cogs, ascending=False)
+    elif sort_by == "ยอดชำระมากสุด → น้อยสุด" and col_settle in settle_display.columns:
+        settle_display = settle_display.sort_values(col_settle, ascending=False)
+    elif sort_by == "กำไรมากสุด → น้อยสุด" and col_profit in settle_display.columns:
+        settle_display = settle_display.sort_values(col_profit, ascending=False)
+
+    if not is_admin():
+        settle_display = settle_display.drop(
+            columns=[c for c in (col_settle, col_cogs, col_profit) if c in settle_display.columns],
+            errors="ignore",
+        )
+    st.dataframe(settle_display, width="stretch", hide_index=True, height=380)
+    st.caption(f"แสดงผล {len(settle_display):,} รายการ จากทั้งหมด {len(orders_df):,} รายการ")
+
+with tab_v_orders:
+    st.markdown("##### 📦 ตารางรายการสินค้าในออเดอร์ (คำนวณ Col I: ราคาต่อหน่วย, Col J: มูลค่าต้นทุน แล้ว)")
+    ord_display = company_order_lines_view(order_lines_df)
+    if ord_display.empty:
+        st.info("ไม่มีข้อมูลในชีต Order")
+    else:
+        search_sku = st.text_input("🔍 ค้นหาตาม Seller SKU หรือชื่อสินค้า:", placeholder="พิมพ์ SKU หรือชื่อ...", key="search_sku_input")
+        if search_sku.strip():
+            mask = (
+                ord_display["Seller SKU"].astype(str).str.contains(search_sku.strip(), case=False, na=False)
+                | ord_display["Product Name"].astype(str).str.contains(search_sku.strip(), case=False, na=False)
+            )
+            ord_display = ord_display[mask]
+
+        if not is_admin():
+            ord_display = ord_display.drop(columns=[c for c in ("ราคาต่อหน่วย", "มูลค่า") if c in ord_display.columns], errors="ignore")
+        st.dataframe(ord_display, width="stretch", hide_index=True, height=380)
+        st.caption(f"แสดงผล {len(ord_display):,} แถวสินค้า จากทั้งหมด {len(order_lines_df):,} แถว")
+
+with tab_v_sku:
+    st.markdown("##### ⚠️ ตารางราคาทุนสินค้า (SKU Master)")
+    if not res.missing_skus.empty:
+        st.warning(f"⚠️ พบ **{len(res.missing_skus):,} สินค้า** ที่ยังไม่มีราคาทุนในระบบ (ระบบใช้ต้นทุน 0.0 ชั่วคราว)")
         st.dataframe(
-            res.missing_skus.rename(columns={"sku": "รหัส", "name": "ชื่อ", "category": "หมวดหมู่", "qty": "จำนวนขายสุทธิ"}),
+            res.missing_skus.rename(columns={"sku": "รหัส SKU", "name": "ชื่อสินค้า", "category": "หมวดหมู่", "qty": "จำนวนที่ขาย"}),
             width="stretch",
             hide_index=True,
         )
+    else:
+        st.success("✅ สินค้าทุกรหัสในงวดนี้มีราคาทุนครบ 100%")
+
+    with st.expander("📦 ดูและค้นหาฐานข้อมูลราคาทุนสินค้าทั้งหมดในระบบ", expanded=False):
+        st.dataframe(
+            sku_master_df[["sku", "name", "category", "unit_cost", "retail_price", "promo_price", "list_price"]].rename(
+                columns={
+                    "sku": "รหัส",
+                    "name": "ชื่อสินค้า",
+                    "category": "หมวดหมู่",
+                    "unit_cost": "ราคาทุน",
+                    "retail_price": "ราคาปลีก",
+                    "promo_price": "ราคาโปร",
+                    "list_price": "ราคาตั้งขาย",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+            height=300,
+        )
+        st.page_link("pages/3_📦_สินค้าและต้นทุน.py", label="ไปหน้าจัดการและแก้ไขราคาทุนสินค้า →", icon="📦")
+
+with tab_v_withdraw:
+    st.markdown("##### 🏦 รายการบันทึกการถอนเงินเข้าบัญชีธนาคาร")
+    if res.withdrawals is not None and not res.withdrawals.empty:
+        st.dataframe(res.withdrawals, width="stretch", hide_index=True, height=350)
+        st.caption(f"รวม {len(res.withdrawals):,} รายการถอนเงิน ยอดรวม: {baht(res.withdrawals['จำนวน'].sum() if 'จำนวน' in res.withdrawals.columns else 0)}")
+    else:
+        st.info("ไม่มีข้อมูลบันทึกการถอนในไฟล์ที่นำเข้า")
+
+with tab_v_fees:
+    st.markdown("##### 📋 รายละเอียดค่าธรรมเนียม TikTok Shop ตามโครงสร้างทางการ")
+    fee_table = tiktok_report_table(res)
+    if not fee_table.empty:
+        st.dataframe(fee_table, width="stretch", hide_index=True, height=350)
+    else:
+        st.info("ไม่มีรายละเอียดค่าธรรมเนียม")
+
+st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
+
+# ==============================================================================
+# ส่วนที่ 3: การส่งออกข้อมูล (Export Section)
+# ==============================================================================
+st.markdown(
+    """
+    <div style="background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%); padding: 20px 26px; border-radius: 16px; margin-bottom: 22px; box-shadow: 0 4px 20px -2px rgba(124, 58, 237, 0.3); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div>
+            <div style="display: inline-block; background: rgba(255, 255, 255, 0.2); color: #ffffff; font-size: 0.78rem; font-weight: 800; padding: 3px 10px; border-radius: 6px; letter-spacing: 0.05em; margin-bottom: 6px;">STEP 03</div>
+            <h3 style="color: white; margin: 0; font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em;">🎯 ส่งออกไฟล์ต้นทุนรวมฉบับสมบูรณ์ (Export Master File)</h3>
+            <p style="color: #f3e8ff; margin: 4px 0 0 0; font-size: 0.95rem;">
+                ดาวน์โหลดไฟล์ต้นทุนรวมฉบับสมบูรณ์ 7 ชีตตรงมาตรฐานบริษัท หรือบันทึกลงโฟลเดอร์ <code>data/</code> ทันที
+            </p>
+        </div>
+        <div style="font-size: 2.2rem; opacity: 0.9;">🚀</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# พระเอกของระบบ: กล่องส่งออกไฟล์ต้นทุนรวมฉบับสมบูรณ์
+default_cost_filename = format_thai_cost_filename(cur_period)
 
 with st.container(border=True):
-    t_settle, t_ord = st.tabs(
-        [
-            "📑 ชีต 'รายละเอียดคำสั่งซื้อ' (คำนวณ F=ยอดชำระ, G=ต้นทุนรวม, H=กำไร แล้ว)",
-            "📦 ชีต 'Order' (คำนวณ I=ราคาต่อหน่วย, J=มูลค่า แล้ว)",
-        ]
+    st.markdown(
+        """
+        <div style="background: linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%); border: 1.5px solid #6ee7b7; border-radius: 16px; padding: 18px 24px; margin-bottom: 20px;">
+            <div style="font-size: 1.25rem; font-weight: 800; color: #065f46; margin-bottom: 8px;">
+                🎯 ไฟล์ต้นทุนรวมฉบับสมบูรณ์ (Master Cost File — ครบทั้ง 7 ชีตตามมาตรฐานบริษัท 100%)
+            </div>
+            <div style="font-size: 0.95rem; color: #047857; line-height: 1.6;">
+                ไฟล์ที่ดาวน์โหลดออกมานี้สามารถนำไปใช้งานต่อหรือส่งให้ฝ่ายบัญชีได้ทันที โดยประกอบด้วยชีตครบถ้วน:
+                <br>• 📑 <b>รายละเอียดคำสั่งซื้อ:</b> คำนวณเงินรับสุทธิ (Col F), ต้นทุนสินค้าจริง (Col G), กำไรสุทธิ (Col H) รายออเดอร์ครบถ้วน
+                <br>• 📦 <b>SKU:</b> ฐานข้อมูลราคาทุนสินค้าทุกรหัสจากระบบ
+                <br>• 🚚 <b>Order ล่าสุด & Order ก่อนหน้า:</b> แยกชีตคำสั่งซื้อ 2 เดือนติดกัน พร้อมราคาต่อหน่วย (Col I) และมูลค่าต้นทุน (Col J)
+                <br>• 📋 <b>รายงาน, บันทึกการถอน, คำอธิบายค่าธรรมเนียม:</b> ข้อมูลทางการเงิน TikTok Shop ครบถ้วน
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    with t_settle:
-        settle_view = company_settlement_view(o)
-        if not is_admin():
-            settle_view = settle_view.drop(
-                columns=[c for c in ("ยอดการชำระเงินทั้งหมด (F)", "ต้นทุนรวม (G)", "กำไร (H = F - G)") if c in settle_view.columns]
+
+    exp_col_name, exp_col_dl, exp_col_save = st.columns([2.0, 1.4, 1.4], gap="medium")
+    with exp_col_name:
+        custom_cost_name = st.text_input(
+            "ชื่อไฟล์ต้นทุนรวมที่ต้องการส่งออก (.xlsx):",
+            value=default_cost_filename,
+            key="input_export_cost_filename",
+            help="สามารถแก้ไขชื่อไฟล์ได้ เช่น ต้นทุน2569-09.xlsx หรือ ต้นทุนดีไวน์2569-09.xlsx",
+        ).strip()
+        if not custom_cost_name.endswith(".xlsx"):
+            custom_cost_name += ".xlsx"
+
+    # สร้างไฟล์ Excel ต้นทุนรวม (แคชไว้ใน session_state เพื่อไม่ให้สร้างซ้ำ 25 วินาทีทุกครั้งที่กดปุ่ม/กรองข้อมูล)
+    excel_cache_key = f"{cur_period}_{len(res.orders)}_{len(sku_master_df)}"
+    if st.session_state.get("_cached_master_excel_key") != excel_cache_key:
+        with st.spinner("กำลังเตรียมไฟล์ต้นทุนรวมฉบับสมบูรณ์ (ครั้งแรก)..."):
+            master_excel_bytes = build_company_cost_master_excel(
+                res=res,
+                sku_master=sku_master_df,
+                period_label=cur_period,
             )
-        st.dataframe(settle_view, width="stretch", hide_index=True, height=400)
-    with t_ord:
-        ord_view = company_order_lines_view(res.order_lines)
-        if ord_view.empty:
-            st.caption("ไม่มีข้อมูลจากชีต Order")
-        else:
-            if not is_admin():
-                ord_view = ord_view.drop(columns=[c for c in ("ราคาต่อหน่วย", "มูลค่า") if c in ord_view.columns])
-            st.dataframe(ord_view, width="stretch", hide_index=True, height=400)
+            st.session_state["_cached_master_excel_bytes"] = master_excel_bytes
+            st.session_state["_cached_master_excel_key"] = excel_cache_key
+    else:
+        master_excel_bytes = st.session_state["_cached_master_excel_bytes"]
+
+    with exp_col_dl:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        st.download_button(
+            label=f"⬇️ ดาวน์โหลดไฟล์ต้นทุนรวม ({custom_cost_name})",
+            data=master_excel_bytes,
+            file_name=custom_cost_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            width="stretch",
+            key="btn_download_master_cost",
+        )
+
+    with exp_col_save:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        if st.button(f"💾 บันทึกสำเนาลงโฟลเดอร์ data/", width="stretch", key="btn_save_to_data_folder"):
+            try:
+                dest_dir = get_data_dir()
+                dest_path = dest_dir / custom_cost_name
+                dest_path.write_bytes(master_excel_bytes)
+                st.toast(f"บันทึกไฟล์ {custom_cost_name} ลงใน {dest_dir} เรียบร้อยแล้ว!")
+                st.success(f"✅ บันทึกไฟล์สำเร็จ: `{dest_path}` ({len(master_excel_bytes) / (1024*1024):.2f} MB)")
+            except Exception as e:
+                st.error(f"ไม่สามารถบันทึกไฟล์ลงโฟลเดอร์ data: {e}")
+
+st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+# กล่องส่งออกรายงานอื่นๆ
+with st.container(border=True):
+    st.markdown("### 📊 2. ส่งออกรายงานผู้บริหารและสรุปงบกำไรขาดทุน")
+    r_col1, r_col2 = st.columns(2, gap="medium")
+
+    file_tag = "รวมทุกงวด" if cur_period == ALL_PERIODS_KEY else cur_period
+    cat_df = by_category(res)
+    sku_df = by_sku(res)
+
+    export_report_sheets = {
+        "รายงานตามโครงสร้าง TikTok": tiktok_report_table(res),
+        "สรุปราย SKU": sku_df,
+        "ตามหมวดหมู่": cat_df,
+        "รายละเอียดคำสั่งซื้อ": company_settlement_view(orders_df),
+        "Order": company_order_lines_view(order_lines_df),
+        "SKU ไม่มีราคาทุน": res.missing_skus,
+    }
+    if not res.withdrawals.empty:
+        export_report_sheets["บันทึกการถอน"] = res.withdrawals
+
+    report_excel_bytes = to_excel(s_metric, export_report_sheets)
+
+    with r_col1:
+        st.download_button(
+            label=f"📗 ดาวน์โหลดรายงานสรุป Excel ทุกชีต (รายงานต้นทุนกำไร_{file_tag}.xlsx)",
+            data=report_excel_bytes,
+            file_name=f"รายงานต้นทุนกำไร_{file_tag}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+            key="btn_download_report_excel",
+        )
+
+    with r_col2:
+        top_sku = (
+            sku_df.sort_values("ยอดขายหลังส่วนลด", ascending=False).head(10)[
+                ["สถานะ", "SKU", "ชื่อสินค้า", "จำนวนขาย", "ยอดขายหลังส่วนลด", "กำไรขั้นต้น"]
+            ]
+            if not sku_df.empty
+            else sku_df
+        )
+        html_report = to_html_report(s_metric, file_tag, cat_df, top_sku)
+        st.download_button(
+            label=f"📕 ดาวน์โหลดรายงานผู้บริหาร 1 หน้า HTML/PDF ({file_tag})",
+            data=html_report.encode("utf-8"),
+            file_name=f"รายงานผู้บริหาร_{file_tag}.html",
+            mime="text/html",
+            width="stretch",
+            key="btn_download_report_html",
+        )

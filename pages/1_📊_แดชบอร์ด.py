@@ -1,3 +1,7 @@
+from core.ui import init_page
+
+init_page("แดชบอร์ด", "📊")
+
 from core.reloader import ensure_fresh
 
 ensure_fresh()
@@ -21,7 +25,6 @@ from core.ui import (
     baht,
     build_saved_periods_comparison_df,
     get_period_financial_params,
-    init_page,
     render_kpi_card,
     render_page_header,
     render_period_selector,
@@ -31,7 +34,6 @@ from core.ui import (
     style_plotly,
 )
 
-init_page("แดชบอร์ด", "📊")
 require_login(admin_only=True)
 res_full = require_result()
 period = st.session_state.get("period", "")
@@ -96,10 +98,14 @@ losing_sku_cnt = int((sku_df["กำไรขั้นต้น"] < 0).sum()) if
 # 1. แบนเนอร์ฟันธงตัวใหญ่: ขาดทุนไหมจากราคาทุน SKU!
 scope_prefix = f"[{active_label}] " if active_label else ""
 if s.rough_profit >= 0:
-    banner_bg, banner_bd, banner_fg = "#f0fdf4", "#86efac", "#166534"
-    verdict_title = f"✅ {scope_prefix}การขายไม่ขาดทุน! กำไรจากการขายสินค้า +{baht(s.rough_profit)}"
+    banner_bg = "linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%)"
+    banner_bd = "#6ee7b7"
+    banner_fg = "#065f46"
+    verdict_title = f"✨ {scope_prefix}การขายไม่ขาดทุน! กำไรจากการขายสินค้า +{baht(s.rough_profit)}"
 else:
-    banner_bg, banner_bd, banner_fg = "#fef2f2", "#fca5a5", "#991b1b"
+    banner_bg = "linear-gradient(135deg, #fff1f2 0%, #ffe4e6 100%)"
+    banner_bd = "#fda4af"
+    banner_fg = "#9f1239"
     verdict_title = f"🚨 {scope_prefix}การขายขาดทุน! ติดลบ {baht(s.rough_profit)} (เทียบจากราคาทุน SKU)"
 
 sub_verdict = (
@@ -113,9 +119,9 @@ if s.sales_commission > 0 or s.fixed_costs > 0:
     sub_verdict += f" · หักค่าคอมฯ และค่าใช้จ่ายรายเดือนตอนท้ายแล้ว: <b>{true_tag}</b>"
 
 st.markdown(
-    f'<div style="background:{banner_bg};border:2px solid {banner_bd};border-radius:14px;padding:18px 24px;margin-bottom:18px;">'
-    f'<div style="font-size:1.45rem;font-weight:700;color:{banner_fg};">{verdict_title}</div>'
-    f'<div style="font-size:1.05rem;color:#334155;margin-top:6px;">{sub_verdict}</div>'
+    f'<div style="background:{banner_bg};border:1.5px solid {banner_bd};border-radius:18px;padding:22px 28px;margin-bottom:22px;box-shadow:0 4px 16px -2px rgba(15,23,42,0.05);">'
+    f'<div style="font-size:1.55rem;font-weight:800;color:{banner_fg};letter-spacing:-0.02em;">{verdict_title}</div>'
+    f'<div style="font-size:1.02rem;color:#334155;margin-top:8px;line-height:1.5;">{sub_verdict}</div>'
     f"</div>",
     unsafe_allow_html=True,
 )

@@ -1,3 +1,7 @@
+from core.ui import init_page
+
+init_page("ผู้ใช้งาน", "⚙️")
+
 from core.reloader import ensure_fresh
 
 ensure_fresh()
@@ -5,9 +9,8 @@ ensure_fresh()
 import streamlit as st
 
 from core import db
-from core.ui import init_page, render_page_header, render_section_header, require_login
+from core.ui import render_page_header, render_section_header, require_login
 
-init_page("ผู้ใช้งาน", "⚙️")
 me = require_login(admin_only=True)
 
 render_page_header("จัดการผู้ใช้งานระบบ")

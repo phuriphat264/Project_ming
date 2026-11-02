@@ -1,12 +1,19 @@
+from core.ui import init_page
+
+init_page("รายงานและส่งออก", "📑")
+
 from core.reloader import ensure_fresh
 
 ensure_fresh()
 
 import streamlit as st
 
+from core import db
 from core.export import (
+    build_company_cost_master_excel,
     company_order_lines_view,
     company_settlement_view,
+    format_thai_cost_filename,
     summary_table,
     to_excel,
     to_html_report,
@@ -20,7 +27,6 @@ from core.metrics import (
 from core.pipeline import ALL_PERIODS_KEY
 from core.ui import (
     build_saved_periods_comparison_df,
-    init_page,
     render_page_header,
     render_period_selector,
     render_section_header,
@@ -29,7 +35,6 @@ from core.ui import (
     summarize_for_period,
 )
 
-init_page("รายงานและส่งออก", "📑")
 require_login(admin_only=True)
 res = require_result()
 period = st.session_state.get("period", "")
@@ -48,8 +53,10 @@ comp_df = build_saved_periods_comparison_df()
 file_tag = "รวมทุกงวด" if period == ALL_PERIODS_KEY else period
 
 with st.container(border=True):
-    render_section_header("ดาวน์โหลดรายงานครบทุกชีต", icon="⬇️")
-    e1, e2 = st.columns(2, gap="medium")
+    render_section_header("ดาวน์โหลดไฟล์ต้นทุนรวมและรายงานสรุป", icon="⬇️")
+    e0, e1, e2 = st.columns(3, gap="medium")
+    thai_cost_name = format_thai_cost_filename(period)
+
     export_sheets = {
         "รายงานตามโครงสร้าง TikTok": tt_rep,
         "เปรียบเทียบรายเดือน": comp_df,
@@ -63,14 +70,36 @@ with st.container(border=True):
     if not res.withdrawals.empty:
         export_sheets["บันทึกการถอน"] = res.withdrawals
 
-    xlsx = to_excel(s, export_sheets)
-    with e1:
+    rep_cache_key = f"rep_{period}_{len(res.orders)}"
+    if st.session_state.get("_cached_rep_key") != rep_cache_key:
+        with st.spinner("กำลังเตรียมไฟล์ Excel สำหรับดาวน์โหลด (ครั้งแรก)..."):
+            master_cost_xlsx = build_company_cost_master_excel(res, db.get_skus(), period_label=period)
+            xlsx = to_excel(s, export_sheets)
+            st.session_state["_cached_rep_master_xlsx"] = master_cost_xlsx
+            st.session_state["_cached_rep_xlsx"] = xlsx
+            st.session_state["_cached_rep_key"] = rep_cache_key
+    else:
+        master_cost_xlsx = st.session_state["_cached_rep_master_xlsx"]
+        xlsx = st.session_state["_cached_rep_xlsx"]
+
+    with e0:
         st.download_button(
-            f"📗 ดาวน์โหลดรายงาน Excel ครบทุกชีต ({file_tag}.xlsx)",
-            xlsx,
-            file_name=f"รายงานต้นทุนกำไร_{file_tag}.xlsx",
+            f"🎯 ดาวน์โหลดไฟล์ต้นทุนรวม ({thai_cost_name})",
+            master_cost_xlsx,
+            file_name=thai_cost_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
             width="stretch",
+            key="rep_btn_master_cost",
+        )
+
+    with e1:
+        st.download_button(
+            f"📗 ดาวน์โหลดรายงาน Excel ทุกชีต ({file_tag}.xlsx)",
+            xlsx,
+            file_name=f"รายงานต้นทุนกำไร_{file_tag}.xlsx",
+            width="stretch",
+            key="rep_btn_all_excel",
         )
     with e2:
         top = (
@@ -82,11 +111,12 @@ with st.container(border=True):
         )
         html = to_html_report(s, file_tag, cat, top)
         st.download_button(
-            f"📕 ดาวน์โหลดรายงานสรุป 1 หน้า ({file_tag} สำหรับพิมพ์ PDF)",
+            f"📕 ดาวน์โหลดรายงาน 1 หน้า ({file_tag} PDF)",
             html.encode("utf-8"),
             file_name=f"รายงานผู้บริหาร_{file_tag}.html",
             mime="text/html",
             width="stretch",
+            key="rep_btn_exec_html",
         )
 
 tab_tt, tab_months, tab_pnl, tab_sku_loss, tab_wd = st.tabs(

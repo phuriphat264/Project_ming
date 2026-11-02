@@ -236,6 +236,9 @@ class LoadedWorkbook:
     ads: pd.DataFrame = field(default_factory=pd.DataFrame)
     sku: pd.DataFrame = field(default_factory=pd.DataFrame)
     withdrawals: pd.DataFrame = field(default_factory=pd.DataFrame)
+    raw_settlement: pd.DataFrame = field(default_factory=pd.DataFrame)
+    raw_orders: pd.DataFrame = field(default_factory=pd.DataFrame)
+    extra_sheets: dict[str, pd.DataFrame] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
 
@@ -394,6 +397,16 @@ def _clean_orders(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def orders_from_raw(raw: pd.DataFrame, sheet_label: str = "") -> pd.DataFrame:
+    """แปลงแถวคำสั่งซื้อดิบ (เช่น จากคลังคำสั่งซื้อสะสม) ให้อยู่ในรูปแบบเดียวกับ LoadedWorkbook.orders"""
+    if raw is None or raw.empty or ORDER_KEY not in raw.columns:
+        return pd.DataFrame()
+    df = _clean_orders(raw.copy())
+    if not df.empty:
+        df["_order_sheet"] = sheet_label
+    return df
+
+
 def _clean_ads(df: pd.DataFrame) -> pd.DataFrame:
     df = df[df[ADS_KEY].notna()].copy()
     df = _to_numeric(df, ADS_NUMERIC)
@@ -428,6 +441,142 @@ def _clean_withdrawals(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+from pathlib import Path
+
+
+def get_data_dir() -> Path:
+    """ค้นหาโฟลเดอร์ data/ ที่ถูกต้อง ไม่ว่าจะรันจาก root หรือ cost_profit_system"""
+    candidates = [
+        Path("data"),
+        Path("../data"),
+        Path(__file__).resolve().parent.parent.parent / "data",
+        Path(__file__).resolve().parent.parent / "data",
+    ]
+    for c in candidates:
+        if c.exists() and c.is_dir():
+            return c.resolve()
+    return (Path(__file__).resolve().parent.parent.parent / "data").resolve()
+
+
+def scan_data_directory(dir_path: str | Path | None = None) -> dict[str, list[dict]]:
+    """สแกนหาไฟล์ในโฟลเดอร์ data/ แยกเป็นหมวดหมู่ คำสั่งซื้อ, income, ต้นทุน"""
+    p = Path(dir_path) if dir_path else get_data_dir()
+    res: dict[str, list[dict]] = {"orders": [], "income": [], "cost": [], "other": []}
+    if not p.exists():
+        return res
+
+    for f in sorted(p.iterdir()):
+        if f.is_file() and f.suffix.lower() in (".xlsx", ".xls") and not f.name.startswith("~$"):
+            fname = f.name
+            size_mb = f.stat().st_size / (1024 * 1024)
+            size_str = f"{size_mb:.2f} MB" if size_mb >= 1.0 else f"{f.stat().st_size / 1024:.0f} KB"
+            info = {
+                "name": fname,
+                "path": str(f.resolve()),
+                "size_bytes": f.stat().st_size,
+                "size_str": size_str,
+            }
+            lower_name = fname.lower()
+            if "คำสั่งซื้อ" in fname or "order" in lower_name:
+                res["orders"].append(info)
+            elif "income" in lower_name or "รายได้" in fname:
+                res["income"].append(info)
+            elif "ต้นทุน" in fname or "cost" in lower_name:
+                res["cost"].append(info)
+            else:
+                res["other"].append(info)
+    return res
+
+
+def _parse_sheet_xml_fallback(file_data, target_sheet_name: str) -> pd.DataFrame:
+    """อ่านชีตโดยตรงจาก OpenXML กรณีไฟล์คำสั่งซื้อ TikTok export โครงสร้างที่ openpyxl อ่านได้ไม่ครบ (เช่น มีหลาย row r=1)"""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    import re
+    from io import BytesIO
+
+    try:
+        if hasattr(file_data, "seek"):
+            file_data.seek(0)
+            z = zipfile.ZipFile(file_data, "r")
+        elif isinstance(file_data, (str, Path)):
+            z = zipfile.ZipFile(str(file_data), "r")
+        else:
+            z = zipfile.ZipFile(BytesIO(file_data), "r")
+
+        with z:
+            ss = []
+            if "xl/sharedStrings.xml" in z.namelist():
+                for event, elem in ET.iterparse(z.open("xl/sharedStrings.xml"), events=("end",)):
+                    if elem.tag.endswith("si"):
+                        ss.append("".join([t.text for t in elem.iter() if t.text and t.tag.endswith("t")]))
+                        elem.clear()
+
+            wb_tree = ET.fromstring(z.read("xl/workbook.xml"))
+            rel_tree = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+            rel_map = {r.attrib["Id"]: r.attrib["Target"].lstrip("/") for r in rel_tree}
+
+            target_path = None
+            for s in wb_tree.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet"):
+                if s.attrib.get("name") == target_sheet_name:
+                    r_id = s.attrib["{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"]
+                    t = rel_map[r_id]
+                    target_path = t if t.startswith("xl/") else "xl/" + t
+                    if target_path.startswith("xl/xl/"):
+                        target_path = target_path[3:]
+                    break
+
+            if not target_path:
+                return pd.DataFrame()
+
+            rows = {}
+            col_map = {}
+
+            def col_to_idx(col):
+                if col not in col_map:
+                    idx = 0
+                    for ch in col:
+                        idx = idx * 26 + (ord(ch) - ord("A") + 1)
+                    col_map[col] = idx - 1
+                return col_map[col]
+
+            with z.open(target_path) as f:
+                for event, elem in ET.iterparse(f, events=("end",)):
+                    if elem.tag.endswith("c"):
+                        ref = elem.attrib.get("r", "")
+                        m = re.match(r"([A-Z]+)(\d+)", ref)
+                        if m:
+                            col_str, r_str = m.groups()
+                            r_num = int(r_str)
+                            c_idx = col_to_idx(col_str)
+                            t = elem.attrib.get("t", "")
+                            v = elem.find("{*}v")
+                            val = ""
+                            if t == "s" and v is not None and v.text:
+                                val = ss[int(v.text)] if int(v.text) < len(ss) else ""
+                            elif t == "str":
+                                val = "".join([ch.text for ch in elem if ch.text])
+                            elif v is not None and v.text:
+                                val = v.text
+                            if r_num not in rows:
+                                rows[r_num] = {}
+                            rows[r_num][c_idx] = val
+                        elem.clear()
+
+            if not rows:
+                return pd.DataFrame()
+
+            max_col = max(max(r.keys()) for r in rows.values()) + 1
+            data_matrix = []
+            for r_num in sorted(rows.keys()):
+                r_dict = rows[r_num]
+                data_matrix.append([r_dict.get(c, "") for c in range(max_col)])
+
+            return pd.DataFrame(data_matrix)
+    except Exception:
+        return pd.DataFrame()
+
+
 def load_workbook(file: str | BinaryIO, name: str | None = None) -> LoadedWorkbook:
     """อ่านทุกชีตในไฟล์ แล้วจัดประเภทชีตอัตโนมัติจากชื่อคอลัมน์มาตรฐาน"""
     if hasattr(file, "read"):
@@ -438,14 +587,28 @@ def load_workbook(file: str | BinaryIO, name: str | None = None) -> LoadedWorkbo
         name = name or str(file)
 
     xl = pd.ExcelFile(data, engine="openpyxl")
-    # ข้ามเฉพาะชีตสรุปข้อความนิ่ง (รายงานคำนวณใหม่จากรายละเอียดคำสั่งซื้อโดยตรง)
+    # ข้ามเฉพาะชีตสรุปข้อความนิ่งในการคำนวณหลัก แต่เก็บสำเนาไว้ใน extra_sheets สำหรับ export
     skip_sheets = {"รายงาน", "คำอธิบายค่าธรรมเนียม"}
+    result = LoadedWorkbook(name=name)
+
+    for s in xl.sheet_names:
+        s_clean = str(s).strip()
+        if s_clean in skip_sheets:
+            try:
+                result.extra_sheets[s_clean] = pd.read_excel(xl, sheet_name=s, header=None)
+            except Exception:
+                pass
+
     keep_sheets = [s for s in xl.sheet_names if str(s).strip() not in skip_sheets]
     sheets = pd.read_excel(xl, sheet_name=keep_sheets, header=None, dtype=str)
-    result = LoadedWorkbook(name=name)
     order_frames: list[pd.DataFrame] = []
+    raw_order_frames: list[pd.DataFrame] = []
 
     for sheet_name, raw in sheets.items():
+        if raw.empty or raw.shape[1] <= 1:
+            fb_df = _parse_sheet_xml_fallback(data, str(sheet_name))
+            if not fb_df.empty:
+                raw = fb_df
         if raw.empty:
             continue
         for keys, kind in (
@@ -461,10 +624,13 @@ def load_workbook(file: str | BinaryIO, name: str | None = None) -> LoadedWorkbo
                 continue
             df = _frame_from_raw(raw, hdr, kind=kind)
             if kind == "settlement":
+                raw_df = df.copy()
                 df = _clean_settlement(df)
                 if len(df) > len(result.settlement):
                     result.settlement = df
+                    result.raw_settlement = raw_df
             elif kind == "orders":
+                raw_order_frames.append(df.copy())
                 df = _clean_orders(df)
                 if not df.empty:
                     df["_order_sheet"] = str(sheet_name)
@@ -496,4 +662,6 @@ def load_workbook(file: str | BinaryIO, name: str | None = None) -> LoadedWorkbo
             .drop(columns=["_line_seq"], errors="ignore")
             .reset_index(drop=True)
         )
+    if raw_order_frames:
+        result.raw_orders = pd.concat(raw_order_frames, ignore_index=True).drop_duplicates()
     return result

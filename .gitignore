@@ -15,9 +15,12 @@ env/
 Thumbs.db
 
 # Database & local data
-data/cost_profit.db
 data/*.sqlite
 data/*.db
+data/*.parquet
+data/*.xlsx
 data/backups/
 data/uploads/
 data/snapshots/
+data/order_repo/
+!data/.gitkeep

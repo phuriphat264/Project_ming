@@ -1,3 +1,7 @@
+from core.ui import init_page
+
+init_page("วิเคราะห์ขั้นสูง", "🎛️")
+
 from core.reloader import ensure_fresh
 
 ensure_fresh()
@@ -9,7 +13,6 @@ from core.export import ORDER_COL_TH
 from core.metrics import detect_anomalies, what_if
 from core.ui import (
     baht,
-    init_page,
     render_kpi_card,
     render_page_header,
     render_period_selector,
@@ -20,7 +23,6 @@ from core.ui import (
     summarize_for_period,
 )
 
-init_page("วิเคราะห์ขั้นสูง", "🎛️")
 require_login(admin_only=True)
 res = require_result()
 period = st.session_state.get("period", "")

@@ -5,17 +5,17 @@ import streamlit as st
 
 from . import db
 
-CORPORATE_PALETTE = ["#3b82f6", "#10b981", "#6366f1", "#f59e0b", "#f43f5e", "#14b8a6", "#8b5cf6", "#64748b"]
+CORPORATE_PALETTE = ["#4f46e5", "#10b981", "#06b6d4", "#f59e0b", "#f43f5e", "#8b5cf6", "#ec4899", "#64748b"]
 
 APP_THEME_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Prompt:wght@300;400;500;600;700;800&display=swap');
 
-/* 1. ฟอนต์ภาษาไทยขนาดใหญ่ อ่านสบายตา (ไม่แตะต้อง <span> ของไอคอน) */
+/* 1. ฟอนต์ภาษาไทยและอังกฤษ Modern Luxury SaaS */
 html, body, .stApp, p, h1, h2, h3, h4, h5, h6, label, input, textarea, button, th, td, li, a,
 [data-testid="stMarkdownContainer"], [data-testid="stText"] {
-    font-family: 'Prompt', 'Sarabun', -apple-system, BlinkMacSystemFont, sans-serif;
-    font-size: 1.06rem;
+    font-family: 'Plus Jakarta Sans', 'Prompt', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 1.04rem;
 }
 
 [data-testid="stIconMaterial"],
@@ -30,9 +30,13 @@ html, body, .stApp, p, h1, h2, h3, h4, h5, h6, label, input, textarea, button, t
     text-transform: none !important;
 }
 
-/* 2. พื้นหลังสีพื้นสะอาดตา และขยายเต็มหน้าจอ */
+/* 2. พื้นหลัง Mesh Gradient สะอาดตา พรีเมียม */
 .stApp {
     background-color: #f8fafc;
+    background-image: 
+        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.05) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(14, 165, 233, 0.04) 0px, transparent 50%),
+        radial-gradient(at 50% 50%, rgba(241, 245, 249, 0.5) 0px, transparent 100%);
 }
 
 header[data-testid="stHeader"] {
@@ -44,141 +48,185 @@ header[data-testid="stHeader"] {
 }
 
 .block-container, [data-testid="stAppViewBlockContainer"] {
-    max-width: 96% !important;
-    width: 96% !important;
-    padding-top: 2.5rem !important;
-    padding-bottom: 3rem !important;
+    max-width: 95% !important;
+    width: 95% !important;
+    padding-top: 2.0rem !important;
+    padding-bottom: 3.5rem !important;
     padding-left: 2.2rem !important;
     padding-right: 2.2rem !important;
 }
 
-/* 3. เมนูด้านซ้าย (Sidebar) ตัวหนังสือใหญ่ กดง่าย */
+/* 3. เมนูด้านซ้าย (Sidebar) สไตล์ Modern Dark Navy & Violet */
 [data-testid="stSidebar"] {
-    background-color: #ffffff !important;
-    border-right: 1px solid #e2e8f0 !important;
-    min-width: 270px !important;
+    background: linear-gradient(180deg, #0f172a 0%, #111827 50%, #1e1b4b 100%) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+    min-width: 280px !important;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.15) !important;
 }
 
 [data-testid="stSidebarNav"]::before {
-    content: "มาตัง คอสเมติก\\Aระบบต้นทุนและกำไร";
+    content: "✨ MATANG COSMETIC\\Aระบบต้นทุนและกำไร TikTok";
     white-space: pre-wrap;
     display: block;
-    padding: 14px 16px;
-    margin: 6px 12px 12px 12px;
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-left: 5px solid #334155;
-    border-radius: 10px;
-    color: #0f172a;
-    font-family: 'Prompt', 'Sarabun', sans-serif;
-    font-size: 1.1rem;
+    padding: 16px 18px;
+    margin: 10px 14px 16px 14px;
+    background: linear-gradient(135deg, rgba(79, 70, 229, 0.28) 0%, rgba(147, 51, 234, 0.22) 100%);
+    border: 1px solid rgba(165, 180, 252, 0.35);
+    border-radius: 14px;
+    color: #ffffff;
+    font-family: 'Plus Jakarta Sans', 'Prompt', sans-serif;
+    font-size: 1.08rem;
     font-weight: 700;
     line-height: 1.45;
+    letter-spacing: 0.01em;
+    box-shadow: 0 4px 16px rgba(79, 70, 229, 0.25);
 }
 
 [data-testid="stSidebarNavItems"] li a {
-    border-radius: 10px !important;
-    margin: 4px 10px !important;
-    padding: 12px 16px !important;
+    border-radius: 12px !important;
+    margin: 4px 12px !important;
+    padding: 12px 18px !important;
+    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
 [data-testid="stSidebarNavItems"] li a span {
-    color: #334155 !important;
+    color: #cbd5e1 !important;
     font-weight: 500 !important;
-    font-size: 1.08rem !important;
+    font-size: 1.06rem !important;
 }
 
 [data-testid="stSidebarNavItems"] li a:hover {
-    background: #f1f5f9 !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+    transform: translateX(4px);
+}
+
+[data-testid="stSidebarNavItems"] li a:hover span {
+    color: #ffffff !important;
 }
 
 [data-testid="stSidebarNavItems"] li a[aria-current="page"] {
-    background: #e2e8f0 !important;
-    border-left: 4px solid #1e293b !important;
+    background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+    box-shadow: 0 6px 20px rgba(79, 70, 229, 0.42) !important;
+    border: 1px solid rgba(199, 210, 254, 0.3) !important;
 }
 
 [data-testid="stSidebarNavItems"] li a[aria-current="page"] span {
-    color: #0f172a !important;
+    color: #ffffff !important;
     font-weight: 700 !important;
 }
 
-/* 4. กล่องการ์ด (st.container(border=True)) โปร่ง โล่ง สบายตา */
+/* 4. กล่องการ์ด (st.container(border=True)) สไตล์ Frosted Glass Card */
 [data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #ffffff !important;
-    border: 1px solid #e2e8f0 !important;
-    border-radius: 14px !important;
-    padding: 22px 26px !important;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03) !important;
+    border: 1px solid rgba(226, 232, 240, 0.85) !important;
+    border-radius: 18px !important;
+    padding: 24px 28px !important;
+    box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.04), 0 2px 6px -1px rgba(15, 23, 42, 0.02) !important;
+    transition: all 0.2s ease;
 }
 
-/* 5. ปุ่มกดขนาดใหญ่ กดง่าย */
+/* 5. ปุ่มกด Modern Gradient & Sleek Button */
 button[kind="primary"], [data-testid="baseButton-primary"] {
-    background-color: #334155 !important;
+    background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
     color: #ffffff !important;
-    border: 1px solid #334155 !important;
-    border-radius: 10px !important;
+    border: none !important;
+    border-radius: 12px !important;
     font-size: 1.05rem !important;
-    font-weight: 600 !important;
-    padding: 0.65rem 1.4rem !important;
-    min-height: 46px !important;
+    font-weight: 700 !important;
+    padding: 0.72rem 1.6rem !important;
+    min-height: 48px !important;
+    box-shadow: 0 4px 16px rgba(79, 70, 229, 0.32) !important;
+    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    letter-spacing: 0.01em;
 }
 
 button[kind="primary"]:hover, [data-testid="baseButton-primary"]:hover {
-    background-color: #1e293b !important;
-    border-color: #1e293b !important;
+    background: linear-gradient(135deg, #4338ca 0%, #4f46e5 100%) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(79, 70, 229, 0.45) !important;
 }
 
 button[kind="secondary"], [data-testid="baseButton-secondary"] {
     background-color: #ffffff !important;
     color: #1e293b !important;
     border: 1px solid #cbd5e1 !important;
-    border-radius: 10px !important;
+    border-radius: 12px !important;
     font-size: 1.02rem !important;
-    font-weight: 500 !important;
-    padding: 0.6rem 1.2rem !important;
-    min-height: 44px !important;
+    font-weight: 600 !important;
+    padding: 0.65rem 1.35rem !important;
+    min-height: 46px !important;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03) !important;
+    transition: all 0.2s ease !important;
 }
 
 button[kind="secondary"]:hover, [data-testid="baseButton-secondary"]:hover {
-    background-color: #f1f5f9 !important;
+    background-color: #f8fafc !important;
     border-color: #94a3b8 !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06) !important;
 }
 
-/* 6. ช่องกรอกข้อมูลและป้ายชื่อตัวใหญ่ */
-.stTextInput label p, .stNumberInput label p, .stSelectbox label p, .stSlider label p {
-    font-size: 1.05rem !important;
+/* 6. ช่องกรอกข้อมูลและป้ายชื่อ */
+.stTextInput label p, .stNumberInput label p, .stSelectbox label p, .stSlider label p, .stMultiSelect label p {
+    font-size: 1.02rem !important;
     font-weight: 600 !important;
     color: #1e293b !important;
+    letter-spacing: 0.01em;
 }
 
 .stTextInput input, .stNumberInput input {
-    font-size: 1.08rem !important;
-    padding: 0.6rem 0.8rem !important;
+    font-size: 1.06rem !important;
+    padding: 0.65rem 0.95rem !important;
+    border-radius: 12px !important;
+    border: 1px solid #cbd5e1 !important;
+    background-color: #ffffff !important;
+    transition: all 0.2s ease !important;
 }
 
-/* 7. แท็บ (Tabs) ตัวหนังสือใหญ่ */
+.stTextInput input:focus, .stNumberInput input:focus {
+    border-color: #6366f1 !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2) !important;
+}
+
+/* 7. แท็บ (Tabs) สไตล์ Segmented Floating Pill */
 .stTabs [data-baseweb="tab-list"] {
     gap: 8px;
-    background-color: #e2e8f0;
+    background-color: #f1f5f9;
     padding: 6px;
-    border-radius: 12px;
-    margin-bottom: 16px;
+    border-radius: 14px;
+    border: 1px solid #e2e8f0;
+    margin-bottom: 20px;
 }
 
 .stTabs [data-baseweb="tab"] {
-    border-radius: 9px;
-    padding: 10px 24px;
-    font-size: 1.05rem !important;
+    border-radius: 10px;
+    padding: 10px 22px;
+    font-size: 1.02rem !important;
     font-weight: 600;
-    color: #475569;
+    color: #64748b;
     border: none;
     background: transparent;
+    transition: all 0.2s ease;
 }
 
 .stTabs [aria-selected="true"] {
     background: #ffffff !important;
-    color: #0f172a !important;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+    color: #4f46e5 !important;
+    font-weight: 700 !important;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08) !important;
+}
+
+/* 8. ตาราง DataFrame */
+[data-testid="stDataFrame"] {
+    border-radius: 14px !important;
+    overflow: hidden !important;
+    border: 1px solid #e2e8f0 !important;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.02) !important;
+}
+
+/* 9. กรอบอัปโหลดไฟล์ */
+[data-testid="stFileUploader"] {
+    border-radius: 14px !important;
 }
 </style>
 """
@@ -187,7 +235,11 @@ button[kind="secondary"]:hover, [data-testid="baseButton-secondary"]:hover {
 def init_page(title: str, icon: str = "📊") -> None:
     st.set_page_config(page_title=f"{title} | มาตัง คอสเมติก", page_icon=icon, layout="wide")
     st.markdown(APP_THEME_CSS, unsafe_allow_html=True)
-    db.init_db()
+    with st.sidebar:
+        st.markdown(APP_THEME_CSS, unsafe_allow_html=True)
+    if not st.session_state.get("_db_inited"):
+        db.init_db()
+        st.session_state["_db_inited"] = True
     if st.session_state.get("_reset_v") != 7:
         for k in ("result", "period", "raw", "notes"):
             st.session_state.pop(k, None)
@@ -201,24 +253,27 @@ def render_page_header(
     badge_color: str = "slate",
     period: str | None = None,
 ) -> None:
-    """หัวข้อหน้าจอขนาดใหญ่ อ่านง่าย ไม่รก"""
+    """หัวข้อหน้าจอขนาดใหญ่ สไตล์ Modern Executive Banner"""
     period_html = ""
     if period:
         period_html = (
-            f'<div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:10px;padding:8px 18px;text-align:right;">'
-            f'<span style="font-size:0.9rem;color:#475569;">งวดบัญชี: </span>'
-            f'<b style="font-size:1.25rem;color:#0f172a;">{period}</b>'
+            f'<div style="background:linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%);border:1px solid #a7f3d0;'
+            f'border-radius:14px;padding:10px 20px;text-align:right;box-shadow:0 2px 10px rgba(16, 185, 129, 0.12);">'
+            f'<div style="font-size:0.85rem;font-weight:600;color:#047857;display:flex;align-items:center;justify-content:flex-end;gap:6px;">'
+            f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#10b981;box-shadow:0 0 6px #10b981;"></span>'
+            f'งวดบัญชีที่เลือก</div>'
+            f'<b style="font-size:1.35rem;font-weight:800;color:#064e3b;letter-spacing:-0.01em;">{period}</b>'
             f"</div>"
         )
 
-    sub_html = f'<div style="font-size:1.05rem;color:#64748b;margin-top:4px;">{subtitle}</div>' if subtitle else ""
+    sub_html = f'<div style="font-size:1.02rem;color:#64748b;margin-top:6px;font-weight:400;">{subtitle}</div>' if subtitle else ""
 
     html = (
-        f'<div style="background:#ffffff;border:1px solid #e2e8f0;border-left:6px solid #334155;'
-        f'border-radius:14px;padding:20px 26px;margin-bottom:20px;display:flex;justify-content:space-between;'
-        f'align-items:center;flex-wrap:wrap;gap:14px;">'
+        f'<div style="background:linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);border:1px solid rgba(226, 232, 240, 0.9);'
+        f'border-radius:18px;padding:22px 28px;margin-bottom:24px;display:flex;justify-content:space-between;'
+        f'align-items:center;flex-wrap:wrap;gap:16px;box-shadow:0 4px 20px -2px rgba(15, 23, 42, 0.05);">'
         f"<div>"
-        f'<div style="font-size:1.85rem;font-weight:700;color:#0f172a;line-height:1.25;">{title}</div>'
+        f'<div style="font-size:1.95rem;font-weight:800;color:#0f172a;line-height:1.25;letter-spacing:-0.02em;">{title}</div>'
         f"{sub_html}"
         f"</div>"
         f"{period_html}"
@@ -233,30 +288,38 @@ def render_kpi_card(
     subtitle: str = "",
     delta: str | None = None,
     delta_positive: bool | None = True,
-    accent: str = "slate",
+    accent: str = "indigo",
     icon: str = "📊",
 ) -> None:
-    """การ์ดตัวเลขขนาดใหญ่ ชัดเจน อ่านง่ายในพริบตา"""
+    """การ์ดตัวเลขขนาดใหญ่ สไตล์ FinTech Glassmorphism พร้อม Badge สวยงาม"""
     badge_html = ""
     if delta:
         if delta_positive is True:
-            d_bg, d_fg = "#dcfce7", "#166534"
+            d_bg, d_fg, d_bd = "#ecfdf5", "#065f46", "#a7f3d0"
+            d_icon = "▲"
         elif delta_positive is False:
-            d_bg, d_fg = "#fee2e2", "#991b1b"
+            d_bg, d_fg, d_bd = "#fff1f2", "#9f1239", "#fecdd3"
+            d_icon = "▼"
         else:
-            d_bg, d_fg = "#f1f5f9", "#334155"
+            d_bg, d_fg, d_bd = "#f1f5f9", "#334155", "#cbd5e1"
+            d_icon = "●"
         badge_html = (
-            f'<span style="background:{d_bg};color:{d_fg};font-size:0.92rem;font-weight:600;'
-            f'padding:3px 10px;border-radius:8px;">{delta}</span>'
+            f'<span style="background:{d_bg};color:{d_fg};border:1px solid {d_bd};font-size:0.86rem;font-weight:700;'
+            f'padding:3px 10px;border-radius:8px;display:inline-flex;align-items:center;gap:4px;">'
+            f'<span style="font-size:0.75rem;">{d_icon}</span> {delta}</span>'
         )
 
-    sub_html = f'<span style="font-size:0.95rem;color:#64748b;">{subtitle}</span>' if subtitle else ""
+    sub_html = f'<span style="font-size:0.92rem;color:#64748b;font-weight:500;">{subtitle}</span>' if subtitle else ""
 
     html = (
-        f'<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;padding:20px 22px;'
-        f'margin-bottom:14px;min-height:132px;display:flex;flex-direction:column;justify-content:space-between;">'
-        f'<div style="font-size:1.05rem;font-weight:600;color:#475569;">{icon} {title}</div>'
-        f'<div style="font-size:2.05rem;font-weight:700;color:#0f172a;margin:8px 0;">{value}</div>'
+        f'<div style="background:#ffffff;border:1px solid rgba(226, 232, 240, 0.9);border-radius:18px;padding:22px 24px;'
+        f'margin-bottom:16px;min-height:142px;display:flex;flex-direction:column;justify-content:space-between;'
+        f'box-shadow:0 4px 18px -2px rgba(15, 23, 42, 0.04);">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+        f'<div style="font-size:0.98rem;font-weight:700;color:#475569;letter-spacing:0.01em;">{title}</div>'
+        f'<div style="width:38px;height:38px;border-radius:12px;background:rgba(99, 102, 241, 0.08);color:#4f46e5;display:flex;align-items:center;justify-content:center;font-size:1.25rem;">{icon}</div>'
+        f'</div>'
+        f'<div style="font-size:2.2rem;font-weight:800;color:#0f172a;letter-spacing:-0.03em;margin:10px 0 6px 0;">{value}</div>'
         f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">{badge_html}{sub_html}</div>'
         f"</div>"
     )
@@ -264,11 +327,13 @@ def render_kpi_card(
 
 
 def render_section_header(title: str, subtitle: str = "", icon: str = "📌") -> None:
-    """หัวข้อส่วนย่อย ตัวใหญ่ กระชับ"""
+    """หัวข้อส่วนย่อย สไตล์ Minimalist Gradient Indicator"""
+    sub_html = f'<div style="font-size:0.95rem;color:#64748b;margin-top:2px;">{subtitle}</div>' if subtitle else ""
     html = (
-        f'<div style="font-size:1.3rem;font-weight:700;color:#0f172a;margin:6px 0 14px 0;">'
-        f"{icon} {title}"
-        f"</div>"
+        f'<div style="display:flex;align-items:center;gap:12px;margin:12px 0 16px 0;">'
+        f'<div style="width:4px;height:24px;border-radius:4px;background:linear-gradient(180deg, #4f46e5 0%, #7c3aed 100%);"></div>'
+        f'<div><div style="font-size:1.32rem;font-weight:800;color:#0f172a;letter-spacing:-0.01em;">{icon} {title}</div>{sub_html}</div>'
+        f'</div>'
     )
     st.markdown(html, unsafe_allow_html=True)
 
@@ -276,7 +341,7 @@ def render_section_header(title: str, subtitle: str = "", icon: str = "📌") ->
 def style_plotly(fig, height: int = 360):
     """ปรับกราฟให้ทันสมัย คมชัด สวยงามสไตล์ Modern Financial Dashboard"""
     fig.update_layout(
-        font=dict(family="Prompt, Sarabun, sans-serif", size=14, color="#334155"),
+        font=dict(family="Plus Jakarta Sans, Prompt, sans-serif", size=13.5, color="#334155"),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         height=height,
@@ -284,7 +349,7 @@ def style_plotly(fig, height: int = 360):
         hoverlabel=dict(
             bgcolor="#0f172a",
             bordercolor="#0f172a",
-            font=dict(family="Prompt, Sarabun, sans-serif", size=14, color="#ffffff"),
+            font=dict(family="Plus Jakarta Sans, Prompt, sans-serif", size=13.5, color="#ffffff"),
         ),
         legend=dict(
             orientation="h",
@@ -315,24 +380,25 @@ def style_plotly(fig, height: int = 360):
 
 
 def login_form() -> None:
-    """หน้าล็อกอินเรียบง่าย ตัวหนังสือใหญ่"""
+    """หน้าล็อกอินสไตล์ Modern SaaS Portal"""
     st.markdown(APP_THEME_CSS, unsafe_allow_html=True)
-    st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
-    _, center, _ = st.columns([1, 1.3, 1])
+    st.markdown("<div style='height: 48px;'></div>", unsafe_allow_html=True)
+    _, center, _ = st.columns([1, 1.25, 1])
     with center:
         with st.container(border=True):
             st.markdown(
-                '<div style="margin-bottom:18px;">'
-                '<div style="font-size:1.65rem;font-weight:700;color:#0f172a;">🔐 เข้าสู่ระบบ</div>'
-                '<div style="font-size:1.02rem;color:#64748b;margin-top:4px;">บริษัท มาตัง คอสเมติก จำกัด</div>'
+                '<div style="text-align:center;margin-bottom:24px;">'
+                '<div style="width:56px;height:56px;margin:0 auto 14px auto;border-radius:16px;background:linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);color:white;display:flex;align-items:center;justify-content:center;font-size:1.75rem;box-shadow:0 6px 20px rgba(79,70,229,0.35);">🔐</div>'
+                '<div style="font-size:1.75rem;font-weight:800;color:#0f172a;letter-spacing:-0.02em;">เข้าสู่ระบบ</div>'
+                '<div style="font-size:0.96rem;color:#64748b;margin-top:4px;font-weight:500;">บริษัท มาตัง คอสเมติก จำกัด · Cost & Profit Intelligence</div>'
                 "</div>",
                 unsafe_allow_html=True,
             )
             with st.form("login_form"):
                 user = st.text_input("ชื่อผู้ใช้", placeholder="admin หรือ staff")
                 pw = st.text_input("รหัสผ่าน", type="password", placeholder="••••••••")
-                remember = st.checkbox("จดจำการเข้าสู่ระบบบนเครื่องนี้ (ไม่ต้องกรอกใหม่รอบหน้า)", value=True)
-                if st.form_submit_button("เข้าสู่ระบบ", type="primary", width="stretch"):
+                remember = st.checkbox("จดจำการเข้าสู่ระบบบนเครื่องนี้", value=True)
+                if st.form_submit_button("🚀 เข้าสู่ระบบทันที", type="primary", width="stretch"):
                     info = db.verify_user(user, pw)
                     if info:
                         st.session_state["user"] = info
@@ -410,6 +476,8 @@ def _snapshot_to_pipeline_result(loaded: dict):
         warnings=loaded["warnings"],
         fee_details=loaded.get("fee_details", {}),
         withdrawals=loaded.get("withdrawals", pd.DataFrame()),
+        raw_settlement=loaded.get("raw_settlement", pd.DataFrame()),
+        raw_orders=loaded.get("raw_orders", pd.DataFrame()),
     )
 
 
@@ -500,8 +568,12 @@ def summarize_for_period(res, period: str):
     )
 
 
+_COMP_DF_CACHE: tuple[str, pd.DataFrame] | None = None
+
+
 def build_saved_periods_comparison_df():
-    """สร้างตารางเปรียบเทียบผลประกอบการของทุกงวดที่บันทึกไว้ในระบบ (เรียงจากเดือนเก่าไปใหม่)"""
+    """สร้างตารางเปรียบเทียบผลประกอบการของทุกงวดที่บันทึกไว้ในระบบ (มีแคชรวดเร็วระดับเสี้ยววินาที)"""
+    global _COMP_DF_CACHE
     import pandas as pd
     from core.metrics import monthly_comparison_table, summarize
     from core.pipeline import recalculate_with_skus
@@ -511,6 +583,10 @@ def build_saved_periods_comparison_df():
         return pd.DataFrame()
 
     sku_master = db.get_skus()
+    cache_sig = f"{','.join(snaps['month'].tolist())}_{len(sku_master)}"
+    if _COMP_DF_CACHE is not None and _COMP_DF_CACHE[0] == cache_sig:
+        return _COMP_DF_CACHE[1].copy()
+
     months_asc = sorted(snaps["month"].tolist())
     rows = []
     for m in months_asc:
@@ -520,7 +596,9 @@ def build_saved_periods_comparison_df():
         r_m = recalculate_with_skus(_snapshot_to_pipeline_result(ld), sku_master)
         s_m = summarize(r_m, fixed_costs=db.total_fixed_cost(m), comm_pct=db.get_comm_pct(m))
         rows.append((m, s_m))
-    return monthly_comparison_table(rows)
+    res = monthly_comparison_table(rows)
+    _COMP_DF_CACHE = (cache_sig, res)
+    return res.copy()
 
 
 def render_period_selector(container=None, key: str = "global_period_sel") -> str:
