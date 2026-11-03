@@ -690,6 +690,7 @@ def build_channel_comparison_df(period_filter: str | None = None) -> pd.DataFram
             "ช่องทาง / ร้านค้า": f"{shop_title} ({m})",
             "ชื่อร้าน": shop_title,
             "งวด": m,
+            "งวดเดือน": m,
             "จำนวนคำสั่งซื้อ": s_m.orders,
             "จำนวนชิ้น": s_m.units,
             "ยอดขายสุทธิ": s_m.net_sales,

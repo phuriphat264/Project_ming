@@ -249,24 +249,25 @@ if not channel_df.empty and len(channel_df["ชื่อร้าน"].unique())
         render_section_header("🏬 เปรียบเทียบผลงานระหว่างช่องทาง TikTok Shop (Channel Comparison)", icon="🏬")
         st.caption("เปรียบเทียบผลประกอบการ ยอดโอนจริง (Col F), ต้นทุนสินค้า (Col G) และกำไรสุทธิ (Col H) ระหว่างแต่ละช่องทาง")
         c_fig, c_tbl = st.columns([1.5, 1.5], gap="medium")
+        x_col = "ช่องทาง / ร้านค้า" if len(channel_df["ชื่อร้าน"].unique()) < len(channel_df) else "ชื่อร้าน"
         with c_fig:
             fig_ch = go.Figure()
             fig_ch.add_bar(
-                x=channel_df["ชื่อร้าน"],
+                x=channel_df[x_col],
                 y=channel_df["เงินโอนจริง (F)"],
                 name="เงินโอนจริง (Col F)",
                 marker=dict(color="#6366f1", cornerradius=6),
                 hovertemplate="เงินโอนจริง: <b>฿%{y:,.0f}</b><extra></extra>",
             )
             fig_ch.add_bar(
-                x=channel_df["ชื่อร้าน"],
+                x=channel_df[x_col],
                 y=channel_df["ต้นทุนสินค้า (G)"],
                 name="ต้นทุนสินค้า (Col G)",
                 marker=dict(color="#f59e0b", cornerradius=6),
                 hovertemplate="ต้นทุนสินค้า: <b>฿%{y:,.0f}</b><extra></extra>",
             )
             fig_ch.add_bar(
-                x=channel_df["ชื่อร้าน"],
+                x=channel_df[x_col],
                 y=channel_df["กำไรสุทธิ (H)"],
                 name="กำไรสุทธิ (Col H)",
                 marker=dict(color="#10b981", cornerradius=6),
@@ -277,7 +278,10 @@ if not channel_df.empty and len(channel_df["ชื่อร้าน"].unique())
             st.plotly_chart(fig_ch, width="stretch", config=PLOT_CFG)
         with c_tbl:
             st.markdown("###### ตารางสรุปเปรียบเทียบแต่ละช่องทาง:")
-            ch_show = channel_df[["ชื่อร้าน", "จำนวนคำสั่งซื้อ", "เงินโอนจริง (F)", "ต้นทุนสินค้า (G)", "กำไรสุทธิ (H)", "% อัตรากำไรสุทธิ"]].copy()
+            tbl_cols = (["งวด", "ชื่อร้าน"] if "งวด" in channel_df.columns and len(channel_df["งวด"].unique()) > 1 else ["ชื่อร้าน"]) + [
+                "จำนวนคำสั่งซื้อ", "เงินโอนจริง (F)", "ต้นทุนสินค้า (G)", "กำไรสุทธิ (H)", "% อัตรากำไรสุทธิ"
+            ]
+            ch_show = channel_df[[c for c in tbl_cols if c in channel_df.columns]].copy()
             st.dataframe(
                 ch_show.style.format({
                     "จำนวนคำสั่งซื้อ": "{:,}",

@@ -373,10 +373,13 @@ def upsert_skus(df: pd.DataFrame, db_path: Path | None = None) -> int:
     with connect(db_path) as c:
         c.executemany(
             f"INSERT INTO sku ({', '.join(SKU_COLUMNS)}) VALUES ({placeholders}) "
-            "ON CONFLICT(sku) DO UPDATE SET name=excluded.name, "
-            "category=CASE WHEN excluded.category != '' THEN excluded.category ELSE sku.category END, "
-            "unit_cost=excluded.unit_cost, retail_price=excluded.retail_price, "
-            "promo_price=excluded.promo_price, list_price=excluded.list_price",
+            "ON CONFLICT(sku) DO UPDATE SET "
+            "name=CASE WHEN excluded.name IS NOT NULL AND excluded.name != '' THEN excluded.name ELSE sku.name END, "
+            "category=CASE WHEN excluded.category IS NOT NULL AND excluded.category != '' THEN excluded.category ELSE sku.category END, "
+            "unit_cost=CASE WHEN excluded.unit_cost > 0 THEN excluded.unit_cost ELSE sku.unit_cost END, "
+            "retail_price=CASE WHEN excluded.retail_price > 0 THEN excluded.retail_price ELSE sku.retail_price END, "
+            "promo_price=CASE WHEN excluded.promo_price > 0 THEN excluded.promo_price ELSE sku.promo_price END, "
+            "list_price=CASE WHEN excluded.list_price > 0 THEN excluded.list_price ELSE sku.list_price END",
             df[SKU_COLUMNS].itertuples(index=False, name=None),
         )
     return len(df)
