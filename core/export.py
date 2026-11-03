@@ -18,9 +18,9 @@ ORDER_COL_TH = {
     "date": "เวลาที่ชำระคำสั่งซื้อ",
     "category": "หมวดหมู่",
     "units": "จำนวนชิ้นสุทธิ",
-    "net_settlement": "ยอดการชำระเงินทั้งหมด (F)",
-    "cogs": "ต้นทุนรวม (G)",
-    "profit": "กำไร (H = F - G)",
+    "net_settlement": "ยอดการชำระเงินทั้งหมด",
+    "cogs": "ต้นทุนรวม",
+    "profit": "กำไร",
     "net_sales": "รายได้ทั้งหมด",
     "gross_sales": "ยอดรวมค่าสินค้าหลังหักส่วนลดจากผู้ขาย",
     "gross_sales_before_discount": "ยอดรวมค่าสินค้าก่อนหักส่วนลด",
@@ -52,12 +52,18 @@ ORDER_COL_TH = {
 
 def company_settlement_view(orders_df: pd.DataFrame) -> pd.DataFrame:
     """จัดเรียงคอลัมน์ตารางรายละเอียดคำสั่งซื้อให้ตรงกับไฟล์ของบริษัท (F=ยอดชำระ, G=ต้นทุนรวม, H=กำไร)"""
-    o = ensure_order_columns(orders_df)
+    o = ensure_order_columns(orders_df).copy()
+    if "สกุลเงิน" not in o.columns and "currency" not in o.columns:
+        o["สกุลเงิน"] = "THB"
+    elif "currency" in o.columns and "สกุลเงิน" not in o.columns:
+        o["สกุลเงิน"] = o["currency"].fillna("THB")
+
     ordered = [
         "order_id",
         "txn_type",
         "created_date",
         "date",
+        "สกุลเงิน",
         "net_settlement",
         "cogs",
         "profit",
@@ -94,6 +100,7 @@ def company_order_lines_view(lines_df: pd.DataFrame) -> pd.DataFrame:
         "Order Status",
         "Order Substatus",
         "Cancelation/Return Type",
+        "Normal or Pre-order",
         "SKU ID",
         "Seller SKU",
         "Product Name",
@@ -216,7 +223,7 @@ def build_company_cost_master_excel(
 ) -> bytes:
     """สร้างไฟล์ Excel ต้นทุนรวมฉบับสมบูรณ์ (ต้นทุน(ปี-เดือน).xlsx)
     โครงสร้างชีตตรงกับไฟล์ของบริษัท 100%:
-    1. รายละเอียดคำสั่งซื้อ (แทรก Col F: ยอดชำระ, Col G: ต้นทุนรวม, Col H: กำไร)
+    1. รายละเอียดคำสั่งซื้อ (แทรก Col F: ยอดชำระ, Col G: ต้นทุนรวม, Col H: กำไร พร้อมสูตร =SUM และไฮไลท์สีเหลืองที่แถว 1)
     2. SKU (ตารางราคาทุนสินค้า)
     3. Order (แทรก Col I: ราคาต่อหน่วย, Col J: มูลค่า)
     4. รายงาน (TikTok Report)
@@ -226,6 +233,11 @@ def build_company_cost_master_excel(
     """
     buf = BytesIO()
 
+    # ยอดรวมมาตรฐานที่จะแสดงบนแถว 1 (ตรงกับหน้า Web Dashboard 100%)
+    total_f = float(res.orders["net_settlement"].sum()) if hasattr(res, "orders") and not res.orders.empty else 0.0
+    total_g = float(res.orders["cogs"].sum()) if hasattr(res, "orders") and not res.orders.empty else 0.0
+    total_h = float(res.orders["profit"].sum()) if hasattr(res, "orders") and not res.orders.empty else (total_f - total_g)
+
     # 1. เตรียมชีต 'รายละเอียดคำสั่งซื้อ'
     raw_s = getattr(res, "raw_settlement", None)
     if raw_s is not None and not raw_s.empty:
@@ -233,9 +245,6 @@ def build_company_cost_master_excel(
         # หา column ID
         id_col = "หมายเลขคำสั่งซื้อ/การปรับ" if "หมายเลขคำสั่งซื้อ/การปรับ" in settle_df.columns else settle_df.columns[0]
         s_oids = settle_df[id_col].astype(str).str.strip()
-
-        cogs_map = dict(zip(res.orders["order_id"].astype(str).str.strip(), res.orders["cogs"]))
-        profit_map = dict(zip(res.orders["order_id"].astype(str).str.strip(), res.orders["profit"]))
 
         f_col_name = "ยอดการชำระเงินทั้งหมด" if "ยอดการชำระเงินทั้งหมด" in settle_df.columns else None
         if f_col_name:
@@ -249,8 +258,22 @@ def build_company_cost_master_excel(
         # ลบคอลัมน์ ต้นทุนรวม และ กำไร ใน part2 หากมีติดมาเดิม
         part2 = part2.drop(columns=[c for c in ("ต้นทุนรวม", "กำไร") if c in part2.columns], errors="ignore")
 
-        part1["ต้นทุนรวม"] = s_oids.map(cogs_map).fillna(0.0)
-        part1["กำไร"] = s_oids.map(profit_map).fillna(0.0)
+        # แปลงคอลัมน์ยอดชำระเป็นตัวเลข
+        f_real_col = part1.columns[f_idx]
+        part1[f_real_col] = pd.to_numeric(part1[f_real_col], errors="coerce").fillna(0.0)
+
+        # กำหนดต้นทุนรวม (COGS) และกำไร (Profit) โดยอ้างอิงจาก res.orders ที่ deduplicate เรียบร้อยแล้ว
+        if len(res.orders) == len(settle_df):
+            part1["ต้นทุนรวม"] = pd.to_numeric(res.orders["cogs"], errors="coerce").fillna(0.0).to_numpy()
+            part1["กำไร"] = pd.to_numeric(res.orders["profit"], errors="coerce").fillna(0.0).to_numpy()
+        else:
+            order_cogs = dict(zip(res.orders["order_id"].astype(str).str.strip(), res.orders["cogs"]))
+            dup_mask = s_oids.duplicated(keep="first")
+            cogs_vals = s_oids.map(order_cogs).fillna(0.0).to_numpy()
+            cogs_vals[dup_mask] = 0.0
+            part1["ต้นทุนรวม"] = cogs_vals
+            f_vals = pd.to_numeric(part1[f_real_col], errors="coerce").fillna(0.0).to_numpy()
+            part1["กำไร"] = f_vals - cogs_vals
 
         final_settle = pd.concat([part1, part2], axis=1)
     else:
@@ -279,7 +302,7 @@ def build_company_cost_master_excel(
 
         sku_cost_map = dict(zip(sku_master["sku"].astype(str).str.strip(), sku_master["unit_cost"]))
         seller_skus = o_df[sku_col].astype(str).str.strip() if sku_col in o_df.columns else pd.Series(0.0, index=o_df.index)
-        unit_costs = seller_skus.map(sku_cost_map).fillna(0.0)
+        unit_costs = pd.to_numeric(seller_skus.map(sku_cost_map), errors="coerce").fillna(0.0)
 
         if qty_col and qty_col in o_df.columns:
             quantities = pd.to_numeric(o_df[qty_col], errors="coerce").fillna(0.0)
@@ -325,6 +348,15 @@ def build_company_cost_master_excel(
             "align": "center",
             "valign": "vcenter",
         })
+        yellow_summary_fmt = book.add_format({
+            "bold": True,
+            "bg_color": "#FEF08A",
+            "font_color": "#000000",
+            "border": 1,
+            "align": "right",
+            "valign": "vcenter",
+            "num_format": "#,##0.00",
+        })
 
         def _write_sheet(df: pd.DataFrame, sheet_title: str):
             if df is None or df.empty:
@@ -348,8 +380,50 @@ def build_company_cost_master_excel(
             ws.freeze_panes(1, 0)
             ws.autofilter(0, 0, len(clean_df), len(clean_df.columns) - 1)
 
-        # ชีต 1: รายละเอียดคำสั่งซื้อ
-        _write_sheet(final_settle, "รายละเอียดคำสั่งซื้อ")
+        # ชีต 1: รายละเอียดคำสั่งซื้อ (เขียนพิเศษ: F1, G1, H1 เป็นสูตร =SUM ไฮไลท์สีเหลือง และ H ทุกแถวข้อมูลเป็นสูตร =+F-G)
+        clean_settle = final_settle.copy()
+        for col in clean_settle.select_dtypes(include=["datetimetz", "datetime"]).columns:
+            clean_settle[col] = clean_settle[col].dt.tz_localize(None) if hasattr(clean_settle[col].dt, "tz") and clean_settle[col].dt.tz else clean_settle[col]
+
+        s_name = "รายละเอียดคำสั่งซื้อ"
+        clean_settle.to_excel(xw, sheet_name=s_name, index=False)
+        ws_settle = xw.sheets[s_name]
+        n_rows = len(clean_settle)
+
+        f_idx = clean_settle.columns.get_loc("ยอดการชำระเงินทั้งหมด") if "ยอดการชำระเงินทั้งหมด" in clean_settle.columns else 5
+        g_idx = clean_settle.columns.get_loc("ต้นทุนรวม") if "ต้นทุนรวม" in clean_settle.columns else 6
+        h_idx = clean_settle.columns.get_loc("กำไร") if "กำไร" in clean_settle.columns else 7
+
+        # Format คอลัมน์และ Header
+        for col_idx, col_name in enumerate(clean_settle.columns):
+            if col_idx not in (f_idx, g_idx, h_idx):
+                ws_settle.write(0, col_idx, str(col_name), header_fmt)
+            col_data = clean_settle[col_name]
+            width = min(max(len(str(col_name)), 12) + 3, 40)
+            fmt = None
+            if pd.api.types.is_float_dtype(col_data):
+                fmt = money_fmt
+            elif pd.api.types.is_integer_dtype(col_data):
+                fmt = int_fmt
+            ws_settle.set_column(col_idx, col_idx, width, fmt)
+
+        # เขียนสูตรผลรวมแถวบนสุด (Row 1 / index 0)
+        # F1 = =SUM(F2:F{n_rows+1})
+        # G1 = =SUM(G2:G{n_rows+1})
+        # H1 = =SUM(H2:H{n_rows+1})
+        last_row = n_rows + 1
+        ws_settle.write_formula(0, f_idx, f"=SUM(F2:F{last_row})", yellow_summary_fmt, value=float(total_f))
+        ws_settle.write_formula(0, g_idx, f"=SUM(G2:G{last_row})", yellow_summary_fmt, value=float(total_g))
+        ws_settle.write_formula(0, h_idx, f"=SUM(H2:H{last_row})", yellow_summary_fmt, value=float(total_h))
+
+        # เขียนสูตรคอลัมน์ H (กำไร) =+F{row}-G{row} ทุกแถวข้อมูล
+        for r_idx in range(1, n_rows + 1):
+            excel_r = r_idx + 1
+            p_val = float(clean_settle.iloc[r_idx - 1, h_idx]) if pd.notna(clean_settle.iloc[r_idx - 1, h_idx]) else 0.0
+            ws_settle.write_formula(r_idx, h_idx, f"=+F{excel_r}-G{excel_r}", money_fmt, value=p_val)
+
+        ws_settle.freeze_panes(1, 0)
+        ws_settle.autofilter(0, 0, n_rows, len(clean_settle.columns) - 1)
 
         # ชีต 2: SKU
         _write_sheet(final_sku, "SKU")
@@ -374,7 +448,7 @@ def build_company_cost_master_excel(
                 _write_sheet(rep_table, "รายงาน")
 
         # ชีต 5: บันทึกการถอน
-        if res.withdrawals is not None and not res.withdrawals.empty:
+        if getattr(res, "withdrawals", None) is not None and not res.withdrawals.empty:
             _write_sheet(res.withdrawals, "บันทึกการถอน")
 
         # ชีต 6: คำอธิบายค่าธรรมเนียม
@@ -386,8 +460,9 @@ def build_company_cost_master_excel(
             _write_sheet(fee_ref_df, "คำอธิบายค่าธรรมเนียม")
 
         # ชีต 7: ads
-        if res.ads is not None and not res.ads.empty:
-            _write_sheet(res.ads, "ads")
+        ads_df = getattr(res, "ads", None)
+        if ads_df is not None and not ads_df.empty:
+            _write_sheet(ads_df, "ads")
 
     return buf.getvalue()
 
