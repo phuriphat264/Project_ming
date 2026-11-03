@@ -280,16 +280,30 @@ def build_order_lines(orders: pd.DataFrame, sku_master: pd.DataFrame) -> pd.Data
 
 
 def find_missing_skus(lines: pd.DataFrame) -> pd.DataFrame:
+    cols = ["sku", "name", "category", "qty", "orders_count"]
     if lines.empty:
-        return pd.DataFrame(columns=["sku", "name", "category", "qty"])
+        return pd.DataFrame(columns=cols)
     miss = lines[lines["cost_missing"] & ~lines["is_cancelled"] & (lines["net_qty"] > 0)]
     if miss.empty:
-        return pd.DataFrame(columns=["sku", "name", "category", "qty"])
+        miss = lines[lines["cost_missing"]]
+        if miss.empty:
+            return pd.DataFrame(columns=cols)
+    sku_c = "Seller SKU" if "Seller SKU" in miss.columns else miss.columns[0]
+    p_name = "Product Name" if "Product Name" in miss.columns else sku_c
+    cat_c = "category" if "category" in miss.columns else sku_c
+    q_col = "net_qty" if "net_qty" in miss.columns else ("Quantity" if "Quantity" in miss.columns else sku_c)
+    o_col = ORDER_KEY if ORDER_KEY in miss.columns else miss.columns[0]
+
     return (
-        miss.groupby("Seller SKU")
-        .agg(name=("Product Name", "first"), category=("category", "first"), qty=("net_qty", "sum"))
+        miss.groupby(sku_c)
+        .agg(
+            name=(p_name, "first"),
+            category=(cat_c, "first"),
+            qty=(q_col, "sum") if q_col != sku_c else ("count", "sum"),
+            orders_count=(o_col, "nunique"),
+        )
         .reset_index()
-        .rename(columns={"Seller SKU": "sku"})
+        .rename(columns={sku_c: "sku"})
         .sort_values("qty", ascending=False)
     )
 
@@ -897,7 +911,7 @@ def filter_result_by_month(res: PipelineResult, ym: str) -> PipelineResult:
             wd_ym = pd.to_datetime(sub_wd[wd_date_col], errors="coerce").dt.to_period("M").astype(str)
             sub_wd = sub_wd[wd_ym == ym].reset_index(drop=True)
 
-    sub_missing = find_missing_skus(sub_lines) if not sub_lines.empty else pd.DataFrame(columns=["sku", "name", "category", "qty"])
+    sub_missing = find_missing_skus(sub_lines) if not sub_lines.empty else pd.DataFrame(columns=["sku", "name", "category", "qty", "orders_count"])
     return PipelineResult(
         orders=sub_o,
         order_lines=sub_lines,

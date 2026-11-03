@@ -343,6 +343,29 @@ def save_skus(df: pd.DataFrame, db_path: Path | None = None) -> None:
         )
 
 
+def upsert_sku(
+    sku: str,
+    name: str = "",
+    category: str = "",
+    unit_cost: float = 0.0,
+    retail_price: float = 0.0,
+    promo_price: float = 0.0,
+    list_price: float = 0.0,
+    db_path: Path | None = None,
+) -> None:
+    """เพิ่มหรืออัปเดต SKU เดี่ยว 1 รายการ"""
+    df = pd.DataFrame([{
+        "sku": str(sku).strip(),
+        "name": str(name).strip(),
+        "category": str(category).strip(),
+        "unit_cost": float(unit_cost),
+        "retail_price": float(retail_price),
+        "promo_price": float(promo_price),
+        "list_price": float(list_price),
+    }])
+    upsert_skus(df, db_path=db_path)
+
+
 def upsert_skus(df: pd.DataFrame, db_path: Path | None = None) -> int:
     """เพิ่ม/อัปเดต SKU จาก df โดยไม่ลบตัวที่มีอยู่"""
     df = _normalize_sku_frame(df)

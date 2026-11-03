@@ -128,9 +128,24 @@ def _process_income_with_orders(
         _save_period_snapshot(period, result, shop_code=s_code)
         db.set_app_state("active_period", period)
 
+    # แคชเตรียมไฟล์ Master Excel ล่วงหน้าระหว่างที่มี spinner นำเข้า
+    try:
+        master_bytes = build_company_cost_master_excel(result, sku_master, period_label=period)
+        st.session_state["_cached_master_excel_bytes"] = master_bytes
+        st.session_state["_cached_master_excel_key"] = f"{period}_{len(result.orders)}_{len(sku_master)}"
+    except Exception:
+        pass
+
     st.session_state.update(result=result, period=period, raw=combined, notes=combined.notes)
 
+    warn_msgs = []
     no_cost = next((w for w in result.warnings if "ไม่พบในชีต Order" in w), "")
+    if no_cost:
+        warn_msgs.append(no_cost)
+    if not result.missing_skus.empty:
+        warn_msgs.append(f"⚠️ ตรวจพบ {len(result.missing_skus):,} สินค้าที่ยังไม่มีราคาทุนในระบบ (ระบบเปิดตารางให้กรอกราคาทุนทันทีที่ด้านล่าง เพื่อคำนวณกำไรให้ครบ 100%)")
+    combined_warn = " · ".join(warn_msgs)
+
     msg = (
         f"✅ คำนวณสำเร็จ งวด **{period}** → ไฟล์ต้นทุนรวม **`{format_thai_cost_filename(period)}`**  \n"
         f"• ไฟล์ Order ที่ใส่รอบนี้: **{len(order_items)} ไฟล์** · รายละเอียดคำสั่งซื้อ **{len(result.orders):,} รายการ** · "
@@ -139,8 +154,132 @@ def _process_income_with_orders(
         f"• บันทึกลงคลังคำสั่งซื้อสะสม: ใหม่ **{repo_stat['added']:,}** · อัปเดต **{repo_stat['replaced']:,}** · "
         f"รวมในคลัง **{repo_stat['total']:,} ออเดอร์**"
     )
-    st.session_state["import_flash"] = (msg, no_cost)
+    st.session_state["import_flash"] = (msg, combined_warn)
     st.rerun()
+
+
+def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: str = "top") -> None:
+    """ตารางกรอกราคาทุนสินค้าที่ขาดบนหน้าเว็บ พร้อมบันทึกและคำนวณกำไรใหม่ทันที"""
+    if res_obj.missing_skus.empty:
+        st.success("✅ สินค้าทุกรหัสในงวดนี้มีราคาทุนครบ 100% แล้ว")
+        return
+
+    edit_df = res_obj.missing_skus.copy()
+    q_col = "qty" if "qty" in edit_df.columns else edit_df.columns[0]
+    o_col = "orders_count" if "orders_count" in edit_df.columns else None
+
+    sku_to_list = dict(zip(sku_df["sku"].astype(str).str.strip(), sku_df["list_price"]))
+
+    edit_display = pd.DataFrame({
+        "รหัส SKU": edit_df["sku"].astype(str),
+        "ชื่อสินค้า": edit_df["name"].fillna("").astype(str),
+        "หมวดหมู่": edit_df["category"].fillna("ทั่วไป").astype(str),
+        "จำนวนที่ขาย (ชิ้น)": pd.to_numeric(edit_df[q_col], errors="coerce").fillna(0).astype(int),
+        "จำนวนออเดอร์": pd.to_numeric(edit_df[o_col], errors="coerce").fillna(1).astype(int) if o_col else 1,
+        "ราคาทุนต่อหน่วย (บาท)": 0.0,
+        "ราคาตั้งขาย (บาท)": edit_df["sku"].astype(str).str.strip().map(sku_to_list).fillna(0.0).astype(float),
+    })
+
+    st.markdown(
+        f"""
+        <div style="background: rgba(254, 243, 199, 0.5); border-left: 4px solid #f59e0b; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 0.9rem; color: #92400e;">
+            💡 <b>วิธีใส่ราคาทุน:</b> ดับเบิลคลิกที่ช่อง <b>'ราคาทุนต่อหน่วย (บาท) ⭐'</b> ในตารางด้านล่างเพื่อพิมพ์ตัวเลขต้นทุน แล้วกดปุ่ม <b>'💾 บันทึกราคาทุนและคำนวณใหม่ทันที'</b>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    edited_data = st.data_editor(
+        edit_display,
+        column_config={
+            "รหัส SKU": st.column_config.TextColumn("รหัส SKU", disabled=True),
+            "ชื่อสินค้า": st.column_config.TextColumn("ชื่อสินค้า", disabled=True),
+            "หมวดหมู่": st.column_config.TextColumn("หมวดหมู่", disabled=True),
+            "จำนวนที่ขาย (ชิ้น)": st.column_config.NumberColumn("จำนวนที่ขาย (ชิ้น)", disabled=True, format="%d"),
+            "จำนวนออเดอร์": st.column_config.NumberColumn("จำนวนออเดอร์", disabled=True, format="%d"),
+            "ราคาทุนต่อหน่วย (บาท)": st.column_config.NumberColumn(
+                "ราคาทุนต่อหน่วย (บาท) ⭐",
+                help="พิมพ์ราคาทุนต่อหน่วยของสินค้านี้ เช่น 85.00",
+                min_value=0.0,
+                step=1.0,
+                format="฿%.2f",
+                required=True,
+            ),
+            "ราคาตั้งขาย (บาท)": st.column_config.NumberColumn(
+                "ราคาตั้งขาย (บาท)",
+                min_value=0.0,
+                step=1.0,
+                format="฿%.2f",
+            ),
+        },
+        hide_index=True,
+        width="stretch",
+        key=f"{key_prefix}_missing_sku_editor",
+    )
+
+    c_save1, c_save2 = st.columns([2.5, 1.5], gap="medium")
+    with c_save1:
+        if st.button("💾 บันทึกราคาทุนที่กรอก และคำนวณใหม่ทันที ⚡", type="primary", width="stretch", key=f"{key_prefix}_btn_save_missing_skus"):
+            filled_rows = edited_data[edited_data["ราคาทุนต่อหน่วย (บาท)"] > 0]
+            if filled_rows.empty:
+                st.warning("⚠️ กรุณากรอกราคาทุนในช่อง 'ราคาทุนต่อหน่วย (บาท)' อย่างน้อย 1 สินค้าก่อนกดบันทึก")
+            else:
+                saved_count = 0
+                for _, r in filled_rows.iterrows():
+                    db.upsert_sku(
+                        sku=str(r["รหัส SKU"]).strip(),
+                        name=str(r["ชื่อสินค้า"]).strip(),
+                        category=str(r["หมวดหมู่"]).strip(),
+                        unit_cost=float(r["ราคาทุนต่อหน่วย (บาท)"]),
+                        list_price=float(r["ราคาตั้งขาย (บาท)"]),
+                    )
+                    saved_count += 1
+
+                new_sku_df = db.get_skus()
+                updated_res = recalculate_with_skus(res_obj, new_sku_df)
+                st.session_state["result"] = updated_res
+                st.session_state.pop("_cached_master_excel_bytes", None)
+                st.session_state.pop("_cached_master_excel_key", None)
+
+                s_code = getattr(updated_res, "source", None) or "matang"
+                if is_admin():
+                    _save_period_snapshot(period_name, updated_res, shop_code=s_code)
+
+                st.toast(f"✅ บันทึกราคาทุนสำเร็จ {saved_count} สินค้า และคำนวณกำไรใหม่แล้ว!", icon="🎉")
+                st.rerun()
+
+    with c_save2:
+        if st.button("🔄 รีเซ็ตตาราง", width="stretch", key=f"{key_prefix}_btn_refresh_sku"):
+            st.rerun()
+
+    with st.expander("➕ หรือเพิ่มราคาทุนทีละรายการผ่านแบบฟอร์ม (Manual Add Form)", expanded=False):
+        f_c1, f_c2 = st.columns(2)
+        with f_c1:
+            sku_options = edit_df["sku"].astype(str).tolist()
+            sel_sku = st.selectbox("เลือก SKU ที่ต้องการใส่ราคาทุน:", options=sku_options, key=f"{key_prefix}_sel_sku_form")
+            matched_items = edit_df[edit_df["sku"].astype(str) == sel_sku]
+            item_info = matched_items.iloc[0] if not matched_items.empty else None
+            p_name = st.text_input("ชื่อสินค้า:", value=str(item_info["name"]) if item_info is not None else "", key=f"{key_prefix}_pname_form")
+            p_cat = st.text_input("หมวดหมู่:", value=str(item_info["category"]) if item_info is not None else "ทั่วไป", key=f"{key_prefix}_pcat_form")
+        with f_c2:
+            p_cost = st.number_input("ราคาทุน (บาท) *:", min_value=0.0, step=1.0, value=0.0, key=f"{key_prefix}_pcost_form")
+            p_list = st.number_input("ราคาตั้งขาย (บาท):", min_value=0.0, step=1.0, value=float(sku_to_list.get(sel_sku, 0.0)), key=f"{key_prefix}_plist_form")
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            if st.button("➕ บันทึก SKU นี้", type="secondary", width="stretch", key=f"{key_prefix}_btn_add_single_sku"):
+                if p_cost <= 0:
+                    st.warning("⚠️ กรุณาระบุราคาทุนที่มากกว่า 0 บาท")
+                else:
+                    db.upsert_sku(sku=sel_sku, name=p_name, category=p_cat, unit_cost=p_cost, list_price=p_list)
+                    new_sku_df = db.get_skus()
+                    updated_res = recalculate_with_skus(res_obj, new_sku_df)
+                    st.session_state["result"] = updated_res
+                    st.session_state.pop("_cached_master_excel_bytes", None)
+                    st.session_state.pop("_cached_master_excel_key", None)
+                    s_code = getattr(updated_res, "source", None) or "matang"
+                    if is_admin():
+                        _save_period_snapshot(period_name, updated_res, shop_code=s_code)
+                    st.toast(f"✅ บันทึกราคาทุน {sel_sku} สำเร็จ!", icon="🎉")
+                    st.rerun()
 
 
 # ==============================================================================
@@ -729,6 +868,31 @@ with k4:
         icon="✅" if missing_sku_cnt == 0 else "⚠️",
     )
 
+# กล่องแจ้งเตือนและตารางกรอกราคาทุนสินค้าที่ขาดบนหน้าเว็บทันที
+if missing_sku_cnt > 0 and not res.missing_skus.empty:
+    st.markdown(
+        f"""
+        <div style="background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%); border: 2px solid #f59e0b; border-radius: 14px; padding: 18px 22px; margin-top: 15px; margin-bottom: 20px; box-shadow: 0 4px 14px -2px rgba(245, 158, 11, 0.2);">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <span style="font-size: 2rem;">⚠️</span>
+                    <div>
+                        <h4 style="margin: 0; color: #92400e; font-size: 1.15rem; font-weight: 800;">
+                            ตรวจพบ {missing_sku_cnt:,} สินค้าในคำสั่งซื้อที่ยังไม่มีราคาทุนในระบบ!
+                        </h4>
+                        <p style="margin: 4px 0 0 0; color: #b45309; font-size: 0.92rem;">
+                            สินค้าเหล่านี้ถูกคำนวณต้นทุนเป็น 0 บาทชั่วคราว ทำให้กำไรสุทธิอาจสูงเกินจริง คุณสามารถพิมพ์ราคาทุนในตารางด้านล่างนี้ได้ทันที แล้วกด <b>"💾 บันทึกราคาทุนและคำนวณใหม่ทันที"</b>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.expander(f"✏️ เปิดช่องกรอกราคาทุนสินค้าที่ขาด ({missing_sku_cnt} รายการ) บนหน้าเว็บทันที", expanded=True):
+        _render_missing_skus_editor(res, sku_master_df, cur_period, key_prefix="banner")
+
 # แท็บเลือกดูข้อมูล
 tab_v_settle, tab_v_orders, tab_v_sku, tab_v_withdraw, tab_v_fees = st.tabs(
     [
@@ -853,11 +1017,7 @@ with tab_v_sku:
     st.markdown("##### ⚠️ ตารางราคาทุนสินค้า (SKU Master)")
     if not res.missing_skus.empty:
         st.warning(f"⚠️ พบ **{len(res.missing_skus):,} สินค้า** ที่ยังไม่มีราคาทุนในระบบ (ระบบใช้ต้นทุน 0.0 ชั่วคราว)")
-        st.dataframe(
-            res.missing_skus.rename(columns={"sku": "รหัส SKU", "name": "ชื่อสินค้า", "category": "หมวดหมู่", "qty": "จำนวนที่ขาย"}),
-            width="stretch",
-            hide_index=True,
-        )
+        _render_missing_skus_editor(res, sku_master_df, cur_period, key_prefix="tab")
     else:
         st.success("✅ สินค้าทุกรหัสในงวดนี้มีราคาทุนครบ 100%")
 
@@ -951,43 +1111,57 @@ with st.container(border=True):
         if not custom_cost_name.endswith(".xlsx"):
             custom_cost_name += ".xlsx"
 
-    # สร้างไฟล์ Excel ต้นทุนรวม (แคชไว้ใน session_state เพื่อไม่ให้สร้างซ้ำ 25 วินาทีทุกครั้งที่กดปุ่ม/กรองข้อมูล)
+    # จัดการไฟล์ Excel ต้นทุนรวม (Lazy-load & Cache เพื่อไม่ให้หน้าเว็บค้างหรือช้า)
     excel_cache_key = f"{cur_period}_{len(res.orders)}_{len(sku_master_df)}"
-    if st.session_state.get("_cached_master_excel_key") != excel_cache_key:
-        with st.spinner("กำลังเตรียมไฟล์ต้นทุนรวมฉบับสมบูรณ์ (ครั้งแรก)..."):
-            master_excel_bytes = build_company_cost_master_excel(
-                res=res,
-                sku_master=sku_master_df,
-                period_label=cur_period,
-            )
-            st.session_state["_cached_master_excel_bytes"] = master_excel_bytes
-            st.session_state["_cached_master_excel_key"] = excel_cache_key
-    else:
-        master_excel_bytes = st.session_state["_cached_master_excel_bytes"]
+    has_cached = (
+        st.session_state.get("_cached_master_excel_key") == excel_cache_key
+        and st.session_state.get("_cached_master_excel_bytes") is not None
+    )
 
     with exp_col_dl:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        st.download_button(
-            label=f"⬇️ ดาวน์โหลดไฟล์ต้นทุนรวม ({custom_cost_name})",
-            data=master_excel_bytes,
-            file_name=custom_cost_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            width="stretch",
-            key="btn_download_master_cost",
-        )
+        if has_cached:
+            st.download_button(
+                label=f"⬇️ ดาวน์โหลดไฟล์ต้นทุนรวม ({custom_cost_name})",
+                data=st.session_state["_cached_master_excel_bytes"],
+                file_name=custom_cost_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                width="stretch",
+                key="btn_download_master_cost",
+            )
+        else:
+            if st.button(
+                f"⚡ 1-Click ประกอบไฟล์ต้นทุนรวม ({custom_cost_name})",
+                type="primary",
+                width="stretch",
+                key="btn_generate_master_cost",
+                help="กดเพื่อสร้างไฟล์ Excel 7 ชีตสมบูรณ์พร้อมสูตร SUM",
+            ):
+                with st.spinner("กำลังประกอบไฟล์ต้นทุนรวม 7 ชีต (ใส่สูตร SUM และผูกข้อมูลทุกแถว)..."):
+                    b = build_company_cost_master_excel(
+                        res=res,
+                        sku_master=sku_master_df,
+                        period_label=cur_period,
+                    )
+                    st.session_state["_cached_master_excel_bytes"] = b
+                    st.session_state["_cached_master_excel_key"] = excel_cache_key
+                    st.rerun()
 
     with exp_col_save:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        if st.button(f"💾 บันทึกสำเนาลงโฟลเดอร์ data/", width="stretch", key="btn_save_to_data_folder"):
-            try:
-                dest_dir = get_data_dir()
-                dest_path = dest_dir / custom_cost_name
-                dest_path.write_bytes(master_excel_bytes)
-                st.toast(f"บันทึกไฟล์ {custom_cost_name} ลงใน {dest_dir} เรียบร้อยแล้ว!")
-                st.success(f"✅ บันทึกไฟล์สำเร็จ: `{dest_path}` ({len(master_excel_bytes) / (1024*1024):.2f} MB)")
-            except Exception as e:
-                st.error(f"ไม่สามารถบันทึกไฟล์ลงโฟลเดอร์ data: {e}")
+        if has_cached:
+            if st.button(f"💾 บันทึกสำเนาลงโฟลเดอร์ data/", width="stretch", key="btn_save_to_data_folder"):
+                try:
+                    dest_dir = get_data_dir()
+                    dest_path = dest_dir / custom_cost_name
+                    dest_path.write_bytes(st.session_state["_cached_master_excel_bytes"])
+                    st.toast(f"บันทึกไฟล์ {custom_cost_name} ลงใน {dest_dir} เรียบร้อยแล้ว!")
+                    st.success(f"✅ บันทึกไฟล์สำเร็จ: `{dest_path}` ({len(st.session_state['_cached_master_excel_bytes']) / (1024*1024):.2f} MB)")
+                except Exception as e:
+                    st.error(f"ไม่สามารถบันทึกไฟล์ลงโฟลเดอร์ data: {e}")
+        else:
+            st.button("💾 บันทึกสำเนาลง data/", disabled=True, width="stretch", key="btn_save_disabled", help="กรุณากดปุ่มสร้างไฟล์ก่อนบันทึก")
 
 st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 

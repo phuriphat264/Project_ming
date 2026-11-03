@@ -417,10 +417,10 @@ def build_company_cost_master_excel(
         ws_settle.write_formula(0, h_idx, f"=SUM(H2:H{last_row})", yellow_summary_fmt, value=float(total_h))
 
         # เขียนสูตรคอลัมน์ H (กำไร) =+F{row}-G{row} ทุกแถวข้อมูล
+        h_vals = pd.to_numeric(clean_settle.iloc[:, h_idx], errors="coerce").fillna(0.0).to_numpy()
         for r_idx in range(1, n_rows + 1):
             excel_r = r_idx + 1
-            p_val = float(clean_settle.iloc[r_idx - 1, h_idx]) if pd.notna(clean_settle.iloc[r_idx - 1, h_idx]) else 0.0
-            ws_settle.write_formula(r_idx, h_idx, f"=+F{excel_r}-G{excel_r}", money_fmt, value=p_val)
+            ws_settle.write_formula(r_idx, h_idx, f"=+F{excel_r}-G{excel_r}", money_fmt, value=float(h_vals[r_idx - 1]))
 
         ws_settle.freeze_panes(1, 0)
         ws_settle.autofilter(0, 0, n_rows, len(clean_settle.columns) - 1)

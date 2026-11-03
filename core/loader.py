@@ -578,7 +578,7 @@ def _parse_sheet_xml_fallback(file_data, target_sheet_name: str) -> pd.DataFrame
 
 
 def load_workbook(file: str | BinaryIO, name: str | None = None) -> LoadedWorkbook:
-    """อ่านทุกชีตในไฟล์ แล้วจัดประเภทชีตอัตโนมัติจากชื่อคอลัมน์มาตรฐาน"""
+    """อ่านทุกชีตในไฟล์ แล้วจัดประเภทชีตอัตโนมัติจากชื่อคอลัมน์มาตรฐาน (ใช้ Calamine Engine เพื่อความเร็วสูงสุด)"""
     if hasattr(file, "read"):
         data = BytesIO(file.read())
         name = name or getattr(file, "name", "uploaded.xlsx")
@@ -586,7 +586,23 @@ def load_workbook(file: str | BinaryIO, name: str | None = None) -> LoadedWorkbo
         data = file
         name = name or str(file)
 
-    xl = pd.ExcelFile(data, engine="openpyxl")
+    # เลือกใช้ calamine engine ถ้ามี (เร็วกว่า openpyxl 5-10 เท่า)
+    engine = "openpyxl"
+    try:
+        import python_calamine  # noqa
+        engine = "calamine"
+    except ImportError:
+        pass
+
+    try:
+        if isinstance(data, BytesIO):
+            data.seek(0)
+        xl = pd.ExcelFile(data, engine=engine)
+    except Exception:
+        if isinstance(data, BytesIO):
+            data.seek(0)
+        xl = pd.ExcelFile(data, engine="openpyxl")
+
     # ข้ามเฉพาะชีตสรุปข้อความนิ่งในการคำนวณหลัก แต่เก็บสำเนาไว้ใน extra_sheets สำหรับ export
     skip_sheets = {"รายงาน", "คำอธิบายค่าธรรมเนียม"}
     result = LoadedWorkbook(name=name)

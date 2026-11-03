@@ -11,7 +11,7 @@ import openpyxl
 # Add cost_profit_system to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import db, order_repo
+from core import db, order_repo, pipeline
 from core.loader import load_workbook, _parse_sheet_xml_fallback
 from core.pipeline import run_pipeline, combine, detect_period_label, extract_order_skus
 from core.export import (
@@ -168,6 +168,41 @@ def test_6_multi_shop_lifecycle():
     assert not ok_main, "Main shop 'matang' must be protected from deletion"
     print("  ✓ Multi-Shop lifecycle, auto-detection, and protection verified successfully!")
 
+def test_7_missing_sku_detection_and_recalc():
+    print("--- Test 7: Missing SKU Detection & Inline Recalculation ---")
+    snap = db.load_snapshot("2026-09")
+    sku_master = db.get_skus()
+    lines = snap["lines"].copy()
+
+    # Add a mock line with unknown SKU
+    mock_line = lines.iloc[0:1].copy()
+    mock_line["Seller SKU"] = "MISSING_TEST_SKU_88"
+    mock_line["Product Name"] = "สินค้าทดสอบ SKU ขาด"
+    mock_line["Quantity"] = 2.0
+    mock_line["Sku Quantity of return"] = 0.0
+    mock_line["Order Status"] = "เสร็จสมบูรณ์"
+
+    test_lines = pd.concat([lines, mock_line], ignore_index=True)
+    re_lines = pipeline.build_order_lines(test_lines, sku_master)
+    miss = pipeline.find_missing_skus(re_lines)
+
+    assert not miss.empty, "find_missing_skus should find the missing SKU"
+    found = miss[miss["sku"] == "MISSING_TEST_SKU_88"]
+    assert len(found) == 1, "MISSING_TEST_SKU_88 must be in missing_skus"
+    assert "orders_count" in miss.columns, "orders_count column must exist"
+    assert found.iloc[0]["qty"] == 2.0, "qty must match mock line"
+
+    # Now add the SKU cost into master
+    db.upsert_sku("MISSING_TEST_SKU_88", name="สินค้าทดสอบ SKU ขาด", category="ทดสอบ", unit_cost=150.0)
+    updated_master = db.get_skus()
+    re_lines_updated = pipeline.build_order_lines(test_lines, updated_master)
+    miss_after = pipeline.find_missing_skus(re_lines_updated)
+    assert len(miss_after[miss_after["sku"] == "MISSING_TEST_SKU_88"]) == 0, "MISSING_TEST_SKU_88 must no longer be missing after cost added"
+
+    # Cleanup test SKU
+    db.delete_sku("MISSING_TEST_SKU_88")
+    print("  ✓ Missing SKU detection, orders_count tracking, and instant recalculation verified!")
+
 if __name__ == "__main__":
     print("==================================================")
     print(" RUNNING ANTIGRAVITY COMPREHENSIVE SYSTEM TESTS   ")
@@ -178,6 +213,7 @@ if __name__ == "__main__":
     test_4_backup_and_restore()
     test_5_ui_component_metrics()
     test_6_multi_shop_lifecycle()
+    test_7_missing_sku_detection_and_recalc()
     print("==================================================")
     print(" ✅ ALL TESTS PASSED SUCCESSFULLY! ZERO BUGS FOUND")
     print("==================================================")
