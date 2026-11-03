@@ -404,32 +404,70 @@ with col_s2:
         st.session_state["show_shop_manager_inline"] = not st.session_state.get("show_shop_manager_inline", False)
 
 if st.session_state.get("show_shop_manager_inline"):
-    with st.expander("🏬 จัดการรายชื่อร้านค้า / ช่องทาง TikTok Shop", expanded=True):
-        m_c1, m_c2 = st.columns([1.5, 1], gap="medium")
+    with st.expander("🏬 จัดการรายชื่อร้านค้า / ช่องทาง TikTok Shop (เพิ่ม, แก้ไข, ลบ)", expanded=True):
+        m_c1, m_c2 = st.columns([1.3, 1.2], gap="medium")
         with m_c1:
-            st.markdown("###### รายชื่อช่องทางที่เปิดใช้งาน:")
-            st.dataframe(
-                pd.DataFrame(shops_list)[["code", "name", "tiktok_handle", "is_default"]].rename(
-                    columns={"code": "รหัสร้าน", "name": "ชื่อร้าน/ช่องทาง", "tiktok_handle": "TikTok Handle", "is_default": "ร้านหลัก"}
-                ),
-                hide_index=True,
-                width="stretch",
-            )
+            st.markdown("###### รายชื่อช่องทางทั้งหมดในระบบ:")
+            all_db_shops = db.list_shops(active_only=False)
+            df_sh = pd.DataFrame(all_db_shops)
+            if not df_sh.empty:
+                df_sh["สถานะ"] = df_sh["is_active"].apply(lambda a: "🟢 เปิด" if a else "⚪ ปิด")
+                df_sh["ประเภท"] = df_sh["is_default"].apply(lambda d: "★ ร้านหลัก" if d else "ร้านย่อย")
+                st.dataframe(
+                    df_sh[["code", "name", "tiktok_handle", "ประเภท", "สถานะ"]].rename(
+                        columns={"code": "รหัสร้าน", "name": "ชื่อร้าน/ช่องทาง", "tiktok_handle": "TikTok Handle"}
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
+
         with m_c2:
-            st.markdown("###### ➕ เพิ่มช่องทางใหม่:")
-            with st.form("form_add_shop_inline", clear_on_submit=True):
-                new_s_code = st.text_input("รหัสร้าน (เช่น shop3, live_b) *").strip().lower()
-                new_s_name = st.text_input("ชื่อร้าน/ช่องทาง (เช่น ช่องไลฟ์ 2) *").strip()
-                new_s_handle = st.text_input("TikTok Handle (เช่น @my_shop)").strip()
-                new_s_def = st.checkbox("ตั้งเป็นร้านหลัก", value=False)
-                if st.form_submit_button("บันทึกช่องทางใหม่", type="primary", width="stretch"):
-                    if new_s_code and new_s_name:
-                        db.upsert_shop(new_s_code, new_s_name, new_s_handle, is_default=new_s_def)
-                        st.success(f"เพิ่มช่องทาง {new_s_name} เรียบร้อยแล้ว")
-                        st.session_state["show_shop_manager_inline"] = False
-                        st.rerun()
-                    else:
-                        st.error("กรุณากรอกรหัสร้านและชื่อร้าน")
+            tab_sm_add, tab_sm_edit, tab_sm_del = st.tabs(["➕ เพิ่มร้านใหม่", "✏️ แก้ไขร้าน", "🗑️ ลบร้าน"])
+            with tab_sm_add:
+                with st.form("form_add_shop_inline", clear_on_submit=True):
+                    new_s_code = st.text_input("รหัสร้าน (ภาษาอังกฤษ เช่น live1) *", placeholder="เช่น live1").strip().lower()
+                    new_s_name = st.text_input("ชื่อร้าน/ช่องทาง *", placeholder="เช่น มาตัง ไลฟ์สด 1").strip()
+                    new_s_handle = st.text_input("TikTok Handle", placeholder="@matang_live").strip()
+                    new_s_def = st.checkbox("ตั้งเป็นร้านหลัก", value=False)
+                    if st.form_submit_button("➕ บันทึกร้านค้าใหม่", type="primary", width="stretch"):
+                        if new_s_code and new_s_name:
+                            db.upsert_shop(new_s_code, new_s_name, new_s_handle, is_default=new_s_def)
+                            st.toast(f"✅ เพิ่มช่องทาง {new_s_name} เรียบร้อยแล้ว", icon="🏬")
+                            st.rerun()
+                        else:
+                            st.error("กรุณากรอกรหัสร้านและชื่อร้าน")
+
+            with tab_sm_edit:
+                all_codes = [s["code"] for s in all_db_shops]
+                ed_code = st.selectbox("เลือกร้านที่ต้องการแก้ไข:", options=all_codes, key="inline_sel_edit_shop")
+                cur_s_data = next((s for s in all_db_shops if s["code"] == ed_code), all_db_shops[0])
+                with st.form("form_edit_shop_inline"):
+                    st.text_input("รหัสร้าน (Code)", value=cur_s_data["code"], disabled=True)
+                    ed_name = st.text_input("ชื่อร้าน / ช่องทาง *", value=cur_s_data["name"]).strip()
+                    ed_handle = st.text_input("TikTok Handle", value=cur_s_data["tiktok_handle"]).strip()
+                    ed_def = st.checkbox("ตั้งเป็นร้านหลัก", value=bool(cur_s_data["is_default"]))
+                    ed_act = st.checkbox("เปิดใช้งาน", value=bool(cur_s_data["is_active"]))
+                    if st.form_submit_button("💾 บันทึกการแก้ไข", type="primary", width="stretch"):
+                        if ed_name:
+                            db.upsert_shop(cur_s_data["code"], ed_name, ed_handle, is_default=ed_def, is_active=ed_act)
+                            st.toast(f"✅ อัปเดตข้อมูลร้าน {ed_name} สำเร็จแล้ว", icon="🎉")
+                            st.rerun()
+                        else:
+                            st.error("กรุณากรอกชื่อร้าน")
+
+            with tab_sm_del:
+                del_list = [s["code"] for s in all_db_shops if s["code"] not in ("matang",)]
+                if del_list:
+                    d_code = st.selectbox("เลือกร้านที่ต้องการลบ:", options=del_list, key="inline_sel_del_shop")
+                    d_shop_info = next((s for s in all_db_shops if s["code"] == d_code), None)
+                    d_name = d_shop_info["name"] if d_shop_info else d_code
+                    st.warning(f"⚠️ ยืนยันการลบช่องทาง **{d_name} (`{d_code}`)**?")
+                    if st.button(f"🗑️ ลบ {d_code} ทันที", type="secondary", width="stretch", key="btn_del_shop_inline"):
+                        if db.delete_shop(d_code):
+                            st.toast(f"ลบช่องทาง {d_name} เรียบร้อยแล้ว", icon="🗑️")
+                            st.rerun()
+                else:
+                    st.info("ℹ️ ไม่มีช่องทางย่อยที่สามารถลบได้ (ร้านหลัก 'matang' ไม่สามารถลบได้)")
 
 tab_dual_upload, tab_from_data, tab_multi_upload = st.tabs(
     [

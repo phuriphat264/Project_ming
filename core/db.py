@@ -187,6 +187,15 @@ def get_default_shop(db_path: Path | None = None) -> dict:
     return shops[0] if shops else {"code": "matang", "name": "มาตัง (Matang)", "tiktok_handle": "@matang_official", "is_default": True, "is_active": True}
 
 
+def get_shop(code: str, db_path: Path | None = None) -> dict | None:
+    """ดึงข้อมูลร้านค้า 1 ร้านตามรหัส code"""
+    code = code.strip().lower()
+    for s in list_shops(active_only=False, db_path=db_path):
+        if s["code"] == code:
+            return s
+    return None
+
+
 def upsert_shop(
     code: str,
     name: str,
