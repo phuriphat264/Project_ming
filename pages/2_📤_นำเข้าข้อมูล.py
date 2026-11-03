@@ -351,7 +351,9 @@ with st.container(border=True):
                     del_m = st.selectbox("เลือกเดือนที่ต้องการลบ:", month_list, key="sel_del_repo_m")
                     if st.button(f"🗑️ ยืนยันลบเดือน {del_m}", type="primary", key="btn_del_single_repo_m", width="stretch"):
                         cnt = order_repo.delete_month_from_repo(del_m)
-                        st.toast(f"ลบออเดอร์เดือน {del_m} ออกจากคลังเรียบร้อยแล้ว ({cnt:,} ออเดอร์)")
+                        for k in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_rep_key", "_cached_rep_master_xlsx", "_cached_rep_xlsx", "sel_del_repo_m"):
+                            st.session_state.pop(k, None)
+                        st.toast(f"ลบออเดอร์เดือน {del_m} ออกจากคลังเรียบร้อยแล้ว ({cnt:,} ออเดอร์)", icon="🗑️")
                         st.rerun()
 
                     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
@@ -360,7 +362,9 @@ with st.container(border=True):
                     st.caption("ลบออเดอร์ทุกเดือนทิ้งทั้งหมด (รอบถัดไปต้องใส่ไฟล์ Order 2 ไฟล์ใหม่)")
                     if st.button("ยืนยันล้างคลังทั้งหมด", type="secondary", key="btn_clear_order_repo", width="stretch"):
                         order_repo.clear_repo()
-                        st.toast("ล้างคลังคำสั่งซื้อสะสมทั้งหมดแล้ว")
+                        for k in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_rep_key", "_cached_rep_master_xlsx", "_cached_rep_xlsx", "sel_del_repo_m"):
+                            st.session_state.pop(k, None)
+                        st.toast("ล้างคลังคำสั่งซื้อสะสมทั้งหมดแล้ว", icon="🗑️")
                         st.rerun()
 
 recommended_order_files = 2 if repo_empty else 1
@@ -782,7 +786,12 @@ cur_period = st.session_state.get("period", "")
 if not snapshots.empty:
     with st.container(border=True):
         col_sel_p, col_btn_open, col_btn_del = st.columns([2.5, 1.0, 0.8], gap="small")
-        view_options = [ALL_PERIODS_KEY] + saved_months
+        view_options = [ALL_PERIODS_KEY] + saved_months if len(saved_months) >= 2 else saved_months
+        
+        # ป้องกัน widget จำคีย์ที่ถูกลบไปแล้ว
+        if "active_snapshot_selector" in st.session_state and st.session_state["active_snapshot_selector"] not in view_options:
+            st.session_state.pop("active_snapshot_selector", None)
+
         default_idx = view_options.index(cur_period) if cur_period in view_options else 0
 
         selected_snap = col_sel_p.selectbox(
@@ -799,23 +808,79 @@ if not snapshots.empty:
                 st.rerun()
 
         if is_admin() and col_btn_del.button("🗑️ ลบงวดนี้", type="secondary", width="stretch", key="btn_del_snap"):
+            # ล้างคีย์ widget และแคชทั้งหมดที่อาจค้างอยู่ในหน่วยความจำ
+            for k in (
+                "active_snapshot_selector",
+                "dash_period_sel",
+                "adv_period_sel",
+                "rep_period_sel",
+                "global_period_sel",
+                "_cached_master_excel_bytes",
+                "_cached_master_excel_key",
+                "_cached_rep_key",
+                "_cached_rep_master_xlsx",
+                "_cached_rep_xlsx",
+            ):
+                st.session_state.pop(k, None)
+
             if selected_snap == ALL_PERIODS_KEY:
                 for m in saved_months:
                     db.delete_snapshot(m)
-                db.set_app_state("active_period", "")
                 for k in ("result", "period", "raw", "notes"):
                     st.session_state.pop(k, None)
-                st.toast("ลบข้อมูลงวดทั้งหมดเรียบร้อยแล้ว")
+                db.set_app_state("active_period", "")
+                st.toast("ลบข้อมูลงวดทั้งหมดเรียบร้อยแล้ว", icon="🗑️")
             else:
                 db.delete_snapshot(selected_snap)
-                if cur_period in (selected_snap, ALL_PERIODS_KEY):
+                rem_snaps = db.list_snapshots()
+                rem_months = rem_snaps["month"].tolist() if not rem_snaps.empty else []
+
+                if not rem_months:
+                    # ถ้าไม่มีงวดใดๆ เหลืออยู่เลยในระบบ ให้ล้างผลลัพธ์ออกทั้งหมด
                     for k in ("result", "period", "raw", "notes"):
                         st.session_state.pop(k, None)
-                db.set_app_state("active_period", "")
-                st.toast(f"ลบงวด {selected_snap} แล้ว")
+                    db.set_app_state("active_period", "")
+                else:
+                    # ถ้ากำลังดูงวดที่ถูกลบ หรือสรุปรวมทุกงวด ให้สลับไปยังงวดที่ยังคงเหลืออยู่ทันที
+                    if cur_period == selected_snap or cur_period == ALL_PERIODS_KEY or cur_period not in rem_months:
+                        next_target = ALL_PERIODS_KEY if len(rem_months) >= 2 else rem_months[0]
+                        new_res = load_period_result(next_target)
+                        if new_res is not None:
+                            db.set_app_state("active_period", next_target)
+                            st.session_state.update(result=new_res, period=next_target, notes=[])
+                        else:
+                            for k in ("result", "period", "raw", "notes"):
+                                st.session_state.pop(k, None)
+                            db.set_app_state("active_period", "")
+                    else:
+                        # ถ้างวดที่กำลังดูอยู่คืองวดอื่นที่ไม่ได้โดนลบ ให้โหลดใหม่เพื่อให้แน่ใจว่าฐานข้อมูลอัปเดตตรงกัน
+                        new_res = load_period_result(cur_period)
+                        if new_res is not None:
+                            st.session_state.update(result=new_res, period=cur_period, notes=[])
+
+                st.toast(f"ลบงวด {selected_snap} เรียบร้อยแล้ว", icon="🗑️")
             st.rerun()
 
 res = st.session_state.get("result")
+
+# ถ้าระบบมี snapshot บันทึกไว้ แต่ใน session_state ว่างเปล่า ให้โหลดงวดล่าสุดอัตโนมัติ
+if res is None and not snapshots.empty:
+    saved_p = db.get_app_state("active_period")
+    if saved_p == ALL_PERIODS_KEY and len(saved_months) >= 2:
+        auto_target = ALL_PERIODS_KEY
+    elif saved_p and saved_p in saved_months:
+        auto_target = saved_p
+    elif len(saved_months) >= 2:
+        auto_target = ALL_PERIODS_KEY
+    else:
+        auto_target = saved_months[0]
+
+    loaded_res = load_period_result(auto_target)
+    if loaded_res is not None:
+        db.set_app_state("active_period", auto_target)
+        st.session_state.update(result=loaded_res, period=auto_target, notes=[])
+        res = loaded_res
+
 if res is None:
     st.info("💡 กรุณาเลือกอ่านข้อมูลจากโฟลเดอร์ data/ หรืออัปโหลดไฟล์ในส่วนที่ 1 เพื่อเริ่มดูข้อมูลและดาวน์โหลดไฟล์ต้นทุนรวม")
     st.stop()

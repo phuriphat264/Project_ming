@@ -610,13 +610,31 @@ def render_period_selector(container=None, key: str = "global_period_sel") -> st
     cur_period = st.session_state.get("period", "")
 
     if snaps.empty:
+        if key in st.session_state:
+            st.session_state.pop(key, None)
         return cur_period
 
     saved_months = snaps["month"].tolist()
     order_map = dict(zip(snaps["month"], snaps["order_count"]))
-    options = [ALL_PERIODS_KEY] + saved_months
-    if cur_period and cur_period not in options:
-        options.insert(1, cur_period)
+
+    # กำหนด options ตามจำนวนงวดจริงในฐานข้อมูล
+    if len(saved_months) >= 2:
+        options = [ALL_PERIODS_KEY] + saved_months
+    else:
+        options = saved_months
+
+    # ถ้าคีย์ widget ใน session_state ไม่อยู่ใน options แล้ว ให้ลบทันที ป้องกันค้างงวดที่ถูกลบ
+    if key in st.session_state and st.session_state[key] not in options:
+        st.session_state.pop(key, None)
+
+    # ถ้างวดปัจจุบันไม่อยู่ใน options ให้รีเซ็ตไปยังงวดที่ถูกต้องทันที
+    if cur_period not in options:
+        cur_period = options[0]
+        st.session_state["period"] = cur_period
+        new_res = load_period_result(cur_period)
+        if new_res is not None:
+            db.set_app_state("active_period", cur_period)
+            st.session_state["result"] = new_res
 
     idx = options.index(cur_period) if cur_period in options else 0
 
@@ -710,33 +728,65 @@ def require_result():
     res = st.session_state.get("result")
     cur_period = st.session_state.get("period")
 
-    if res is None:
-        snaps = db.list_snapshots()
-        if not snaps.empty:
-            saved_p = db.get_app_state("active_period")
-            months = snaps["month"].tolist()
-            if saved_p == ALL_PERIODS_KEY:
-                target_period = ALL_PERIODS_KEY
-            elif saved_p and saved_p in months:
-                target_period = saved_p
-            else:
-                target_period = months[0]
-            loaded_res = load_period_result(target_period)
-            if loaded_res is not None:
-                st.session_state.update(result=loaded_res, period=target_period, notes=[])
-                return loaded_res
-        st.info("กรุณาไปที่หน้า **📤 นำเข้าข้อมูล** เพื่ออัปโหลดไฟล์ Excel ก่อน")
+    snaps = db.list_snapshots()
+    saved_months = snaps["month"].tolist() if not snaps.empty else []
+
+    # 1. กรณีไม่มี snapshot ในฐานข้อมูลเลย
+    if snaps.empty:
+        # ถ้ามีผลการคำนวณสดในหน่วยความจำ (เช่น อัปโหลดใหม่สดๆ ก่อนบันทึก snapshot) ให้ใช้งานต่อได้
+        if res is not None:
+            res = recalculate_with_skus(res, db.get_skus())
+            st.session_state["result"] = res
+            return res
+        for k in ("result", "period", "raw", "notes", "_cached_master_excel_bytes", "_cached_master_excel_key"):
+            st.session_state.pop(k, None)
+        db.set_app_state("active_period", "")
+        st.info("💡 กรุณาไปที่หน้า **📤 นำเข้าข้อมูล** เพื่ออัปโหลดไฟล์ Excel ก่อน")
         st.page_link("pages/2_📤_นำเข้าข้อมูล.py", label="ไปหน้านำเข้าข้อมูล", icon="📤")
         st.stop()
 
-    # ถ้านั่งดูสรุปรวมทุกงวดทั้งหมด ให้โหลดรวมใหม่อัตโนมัติเผื่อเพิ่งอัปเดต SKU หรือเพิ่ม/ลบงวด
+    # 2. ตรวจสอบว่างวดปัจจุบันยังถูกต้องและมีอยู่จริงในฐานข้อมูลหรือไม่ (ป้องกันค้างงวดที่เพิ่งถูกลบ)
+    is_stale_period = (
+        cur_period is not None
+        and cur_period != ALL_PERIODS_KEY
+        and cur_period not in saved_months
+    )
+    is_invalid_all = (
+        cur_period == ALL_PERIODS_KEY
+        and len(saved_months) < 2
+    )
+
+    if res is None or is_stale_period or is_invalid_all:
+        saved_p = db.get_app_state("active_period")
+        if saved_p == ALL_PERIODS_KEY and len(saved_months) >= 2:
+            target_period = ALL_PERIODS_KEY
+        elif saved_p and saved_p in saved_months:
+            target_period = saved_p
+        elif len(saved_months) >= 2:
+            target_period = ALL_PERIODS_KEY
+        else:
+            target_period = saved_months[0]
+
+        loaded_res = load_period_result(target_period)
+        if loaded_res is not None:
+            db.set_app_state("active_period", target_period)
+            st.session_state.update(result=loaded_res, period=target_period, notes=[])
+            return loaded_res
+        else:
+            for k in ("result", "period", "raw", "notes"):
+                st.session_state.pop(k, None)
+            st.info("💡 กรุณาไปที่หน้า **📤 นำเข้าข้อมูล** เพื่ออัปโหลดไฟล์ Excel ก่อน")
+            st.page_link("pages/2_📤_นำเข้าข้อมูล.py", label="ไปหน้านำเข้าข้อมูล", icon="📤")
+            st.stop()
+
+    # 3. ถ้านั่งดูสรุปรวมทุกงวดทั้งหมด ให้โหลดรวมใหม่อัตโนมัติเผื่อเพิ่งอัปเดต SKU หรือเพิ่ม/ลบงวด
     if cur_period == ALL_PERIODS_KEY:
         refreshed = load_period_result(ALL_PERIODS_KEY)
         if refreshed is not None:
             st.session_state["result"] = refreshed
             return refreshed
 
-    # คำนวณต้นทุนใหม่เสมอเผื่อผู้ใช้เพิ่งเพิ่ม/ลบ/แก้ไขราคาทุน SKU ในฐานข้อมูล
+    # 4. คำนวณต้นทุนใหม่เสมอเผื่อผู้ใช้เพิ่งเพิ่ม/ลบ/แก้ไขราคาทุน SKU ในฐานข้อมูล
     res = recalculate_with_skus(res, db.get_skus())
     st.session_state["result"] = res
     return res
