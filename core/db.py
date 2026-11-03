@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -92,12 +93,37 @@ def init_db(db_path: Path | None = None) -> None:
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
+            CREATE TABLE IF NOT EXISTS shops (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                tiktok_handle TEXT DEFAULT '',
+                is_default INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
             """
         )
         # รองรับฐานข้อมูลเดิมที่ยังไม่มีคอลัมน์ list_price (ราคาตั้งขาย)
         existing_cols = {r[1] for r in c.execute("PRAGMA table_info(sku)").fetchall()}
         if "list_price" not in existing_cols:
             c.execute("ALTER TABLE sku ADD COLUMN list_price REAL DEFAULT 0")
+
+        # เพิ่มคอลัมน์ shop_code ใน monthly_snapshots หากยังไม่มี
+        snap_cols = {r[1] for r in c.execute("PRAGMA table_info(monthly_snapshots)").fetchall()}
+        if "shop_code" not in snap_cols:
+            c.execute("ALTER TABLE monthly_snapshots ADD COLUMN shop_code TEXT DEFAULT 'matang'")
+
+        # เมล็ดพันธุ์ร้านค้าเริ่มต้น (มาตัง และ ดีไวน์)
+        if c.execute("SELECT COUNT(*) FROM shops").fetchone()[0] == 0:
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            c.execute(
+                "INSERT INTO shops (code, name, tiktok_handle, is_default, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("matang", "มาตัง (Matang)", "@matang_official", 1, 1, now_str),
+            )
+            c.execute(
+                "INSERT INTO shops (code, name, tiktok_handle, is_default, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("dwine", "ดีไวน์ (Dwine)", "@dwine_thailand", 0, 1, now_str),
+            )
 
         # บัญชีเริ่มต้น (ควรเปลี่ยนรหัสผ่านหลังติดตั้ง)
         if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
@@ -124,6 +150,106 @@ def init_db(db_path: Path | None = None) -> None:
                     )
                 except Exception:
                     pass
+
+
+# ---------- shops (multi-channel support) ----------
+def list_shops(active_only: bool = False, db_path: Path | None = None) -> list[dict]:
+    """ดึงรายชื่อช่องทาง / ร้านค้า TikTok ทั้งหมดในระบบ"""
+    init_db(db_path)
+    with connect(db_path) as c:
+        where = "WHERE is_active = 1" if active_only else ""
+        rows = c.execute(
+            f"""
+            SELECT code, name, tiktok_handle, is_default, is_active, created_at
+            FROM shops
+            {where}
+            ORDER BY is_default DESC, name ASC
+            """
+        ).fetchall()
+        return [
+            {
+                "code": r[0],
+                "name": r[1],
+                "tiktok_handle": r[2] or "",
+                "is_default": bool(r[3]),
+                "is_active": bool(r[4]),
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
+
+
+def get_default_shop(db_path: Path | None = None) -> dict:
+    shops = list_shops(active_only=True, db_path=db_path)
+    for s in shops:
+        if s["is_default"]:
+            return s
+    return shops[0] if shops else {"code": "matang", "name": "มาตัง (Matang)", "tiktok_handle": "@matang_official", "is_default": True, "is_active": True}
+
+
+def upsert_shop(
+    code: str,
+    name: str,
+    tiktok_handle: str = "",
+    is_default: bool = False,
+    is_active: bool = True,
+    db_path: Path | None = None,
+) -> None:
+    code = code.strip().lower()
+    name = name.strip()
+    if not code or not name:
+        return
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with connect(db_path) as c:
+        if is_default:
+            c.execute("UPDATE shops SET is_default = 0")
+        c.execute(
+            """
+            INSERT INTO shops (code, name, tiktok_handle, is_default, is_active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(code) DO UPDATE SET
+                name = excluded.name,
+                tiktok_handle = excluded.tiktok_handle,
+                is_default = excluded.is_default,
+                is_active = excluded.is_active
+            """,
+            (code, name, tiktok_handle.strip(), 1 if is_default else 0, 1 if is_active else 0, now_str),
+        )
+
+
+def delete_shop(code: str, db_path: Path | None = None) -> bool:
+    code = code.strip().lower()
+    if code in ("matang",):
+        return False  # Protect default main shop
+    with connect(db_path) as c:
+        c.execute("DELETE FROM shops WHERE code = ?", (code,))
+    return True
+
+
+def detect_shop_from_text(text: str, db_path: Path | None = None) -> dict | None:
+    """ตรวจจับว่าข้อความหรือชื่อไฟล์ตรงกับชื่อร้านหรือรหัสร้านไหน โดยให้ความสำคัญกับคำที่ยาว/เจาะจงก่อน"""
+    if not text:
+        return None
+    shops = list_shops(active_only=True, db_path=db_path)
+    clean_text = str(text).lower()
+
+    candidates = []
+    for s in shops:
+        keys = [s["code"]]
+        if s["tiktok_handle"]:
+            keys.append(s["tiktok_handle"].lower().lstrip("@"))
+        for p in s["name"].lower().split():
+            part = p.strip("()[]- _")
+            if len(part) >= 3:
+                keys.append(part)
+        for k in keys:
+            if k in clean_text:
+                candidates.append((len(k), not s["is_default"], s))
+
+    if candidates:
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return candidates[0][2]
+    return None
 
 
 # ---------- users ----------
@@ -406,6 +532,7 @@ def save_snapshot(
     withdrawals_df: pd.DataFrame | None = None,
     raw_settlement_df: pd.DataFrame | None = None,
     raw_orders_df: pd.DataFrame | None = None,
+    shop_code: str | None = None,
     db_path: Path | None = None,
 ) -> None:
     sdir = _snapshot_dir(db_path)
@@ -439,12 +566,25 @@ def save_snapshot(
     net_profit = float(summary_dict.get("net_profit", 0.0))
     order_count = int(summary_dict.get("orders", len(orders_df)))
 
+    # กำหนด shop_code หากไม่ได้ระบุ
+    if not shop_code:
+        if "ดีไวน์" in month or "dwine" in month.lower():
+            shop_code = "dwine"
+        elif "รวม" in month:
+            shop_code = "all"
+        else:
+            m_shop = re.search(r"\(([^)]+)\)", month)
+            if m_shop:
+                shop_code = m_shop.group(1).strip().lower()
+            else:
+                shop_code = "matang"
+
     with connect(db_path) as c:
         c.execute(
             """
             INSERT INTO monthly_snapshots
-            (month, created_at, summary_json, source, order_count, net_sales, net_profit, warnings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (month, created_at, summary_json, source, order_count, net_sales, net_profit, warnings_json, shop_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(month) DO UPDATE SET
                 created_at = excluded.created_at,
                 summary_json = excluded.summary_json,
@@ -452,7 +592,8 @@ def save_snapshot(
                 order_count = excluded.order_count,
                 net_sales = excluded.net_sales,
                 net_profit = excluded.net_profit,
-                warnings_json = excluded.warnings_json
+                warnings_json = excluded.warnings_json,
+                shop_code = excluded.shop_code
             """,
             (
                 month,
@@ -463,15 +604,17 @@ def save_snapshot(
                 net_sales,
                 net_profit,
                 json.dumps(warnings, ensure_ascii=False),
+                shop_code,
             ),
         )
 
 
 def list_snapshots(db_path: Path | None = None) -> pd.DataFrame:
+    init_db(db_path)
     with connect(db_path) as c:
         return pd.read_sql(
             """
-            SELECT month, created_at, source, order_count, net_sales, net_profit
+            SELECT month, created_at, source, order_count, net_sales, net_profit, shop_code
             FROM monthly_snapshots
             ORDER BY month DESC
             """,
@@ -480,10 +623,11 @@ def list_snapshots(db_path: Path | None = None) -> pd.DataFrame:
 
 
 def load_snapshot(month: str, db_path: Path | None = None) -> dict | None:
+    init_db(db_path)
     with connect(db_path) as c:
         row = c.execute(
             """
-            SELECT summary_json, source, warnings_json
+            SELECT summary_json, source, warnings_json, shop_code
             FROM monthly_snapshots WHERE month = ?
             """,
             (month,),
@@ -523,6 +667,7 @@ def load_snapshot(month: str, db_path: Path | None = None) -> dict | None:
         "fee_details": fee_details,
         "source": row[1],
         "warnings": json.loads(row[2]) if row[2] else [],
+        "shop_code": row[3] if len(row) > 3 and row[3] else "matang",
         "orders": orders_df,
         "lines": lines_df,
         "ads": ads_df,

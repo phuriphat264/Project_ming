@@ -23,6 +23,7 @@ from core.pipeline import ALL_PERIODS_KEY, filter_result_by_month, list_calendar
 from core.ui import (
     CORPORATE_PALETTE,
     baht,
+    build_channel_comparison_df,
     build_saved_periods_comparison_df,
     get_period_financial_params,
     render_kpi_card,
@@ -240,6 +241,54 @@ elif cal_comp_df is not None and not cal_comp_df.empty:
     with st.container(border=True):
         render_section_header("สรุปแยกตามเดือนปฏิทินในไฟล์นี้", icon="🗓️")
         st.dataframe(cal_comp_df, width="stretch", hide_index=True)
+
+# 2.8 สรุปเปรียบเทียบผลงานรายช่องทาง TikTok Shop (Channel Comparison)
+channel_df = build_channel_comparison_df(period if period != ALL_PERIODS_KEY else None)
+if not channel_df.empty and len(channel_df["ชื่อร้าน"].unique()) >= 2:
+    with st.container(border=True):
+        render_section_header("🏬 เปรียบเทียบผลงานระหว่างช่องทาง TikTok Shop (Channel Comparison)", icon="🏬")
+        st.caption("เปรียบเทียบผลประกอบการ ยอดโอนจริง (Col F), ต้นทุนสินค้า (Col G) และกำไรสุทธิ (Col H) ระหว่างแต่ละช่องทาง")
+        c_fig, c_tbl = st.columns([1.5, 1.5], gap="medium")
+        with c_fig:
+            fig_ch = go.Figure()
+            fig_ch.add_bar(
+                x=channel_df["ชื่อร้าน"],
+                y=channel_df["เงินโอนจริง (F)"],
+                name="เงินโอนจริง (Col F)",
+                marker=dict(color="#6366f1", cornerradius=6),
+                hovertemplate="เงินโอนจริง: <b>฿%{y:,.0f}</b><extra></extra>",
+            )
+            fig_ch.add_bar(
+                x=channel_df["ชื่อร้าน"],
+                y=channel_df["ต้นทุนสินค้า (G)"],
+                name="ต้นทุนสินค้า (Col G)",
+                marker=dict(color="#f59e0b", cornerradius=6),
+                hovertemplate="ต้นทุนสินค้า: <b>฿%{y:,.0f}</b><extra></extra>",
+            )
+            fig_ch.add_bar(
+                x=channel_df["ชื่อร้าน"],
+                y=channel_df["กำไรสุทธิ (H)"],
+                name="กำไรสุทธิ (Col H)",
+                marker=dict(color="#10b981", cornerradius=6),
+                hovertemplate="กำไรสุทธิ: <b>฿%{y:,.0f}</b><extra></extra>",
+            )
+            fig_ch = style_plotly(fig_ch, height=320)
+            fig_ch.update_layout(barmode="group", yaxis_title="บาท (฿)", margin=dict(t=20, b=20, l=10, r=10))
+            st.plotly_chart(fig_ch, width="stretch", config=PLOT_CFG)
+        with c_tbl:
+            st.markdown("###### ตารางสรุปเปรียบเทียบแต่ละช่องทาง:")
+            ch_show = channel_df[["ชื่อร้าน", "จำนวนคำสั่งซื้อ", "เงินโอนจริง (F)", "ต้นทุนสินค้า (G)", "กำไรสุทธิ (H)", "% อัตรากำไรสุทธิ"]].copy()
+            st.dataframe(
+                ch_show.style.format({
+                    "จำนวนคำสั่งซื้อ": "{:,}",
+                    "เงินโอนจริง (F)": "฿{:,.2f}",
+                    "ต้นทุนสินค้า (G)": "฿{:,.2f}",
+                    "กำไรสุทธิ (H)": "฿{:,.2f}",
+                    "% อัตรากำไรสุทธิ": "{:.1f}%",
+                }),
+                width="stretch",
+                hide_index=True,
+            )
 
 # 3. ตารางเช็กสินค้าแต่ละตัว (ตรงตามคอลัมน์ ราคาต่อหน่วย I และ มูลค่า J ของชีต Order)
 with st.container(border=True):

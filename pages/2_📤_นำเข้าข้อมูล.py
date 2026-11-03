@@ -67,7 +67,7 @@ render_page_header(
 )
 
 
-def _save_period_snapshot(period_name: str, res_obj) -> None:
+def _save_period_snapshot(period_name: str, res_obj, shop_code: str | None = None) -> None:
     fixed = db.total_fixed_cost(period_name)
     comm_pct = db.get_comm_pct(period_name)
     s_obj = summarize(res_obj, fixed_costs=fixed, comm_pct=comm_pct)
@@ -83,6 +83,7 @@ def _save_period_snapshot(period_name: str, res_obj) -> None:
         withdrawals_df=res_obj.withdrawals,
         raw_settlement_df=getattr(res_obj, "raw_settlement", None),
         raw_orders_df=getattr(res_obj, "raw_orders", None),
+        shop_code=shop_code,
     )
 
 
@@ -91,6 +92,7 @@ def _process_income_with_orders(
     income_bytes: bytes,
     order_items: list[tuple[str, bytes]],
     use_repo: bool,
+    shop: dict | str | None = None,
 ) -> None:
     """อ่าน Income + ไฟล์ Order (1 ไฟล์หรือมากกว่า) → เติมออเดอร์เดือนก่อนจากคลัง → คำนวณ → บันทึก Order ใหม่ลงคลัง"""
     b_inc = load_workbook(BytesIO(income_bytes), name=income_name)
@@ -114,15 +116,16 @@ def _process_income_with_orders(
     sku_master = db.get_skus()
     result = run_pipeline(combined, sku_master)
     all_names = [income_name] + [on for on, _ in order_items]
-    period = detect_period_label(result, all_names)
+    period = detect_period_label(result, all_names, shop=shop)
 
     for fname, fbytes in [(income_name, income_bytes), *order_items]:
         db.save_uploaded_excel(original_name=fname, raw_bytes=fbytes, period=period, uploaded_by=user["username"])
 
     repo_stat = order_repo.save_to_repo(new_raw_orders)
 
+    s_code = shop.get("code") if isinstance(shop, dict) else (shop or "matang")
     if is_admin():
-        _save_period_snapshot(period, result)
+        _save_period_snapshot(period, result, shop_code=s_code)
         db.set_app_state("active_period", period)
 
     st.session_state.update(result=result, period=period, raw=combined, notes=combined.notes)
@@ -232,6 +235,63 @@ def _check_order_count(n_files: int) -> None:
         )
 
 
+# -----------------------------------------------------------------------------
+# เลือกช่องทาง / ร้านค้า TikTok Shop (Multi-Channel Support)
+# -----------------------------------------------------------------------------
+shops_list = db.list_shops(active_only=True)
+shop_codes = [s["code"] for s in shops_list]
+shop_map = {s["code"]: s for s in shops_list}
+
+col_s1, col_s2 = st.columns([3, 1.2], vertical_alignment="bottom")
+with col_s1:
+    def _shop_lbl(c: str) -> str:
+        item = shop_map.get(c, {})
+        handle = f" ({item.get('tiktok_handle')})" if item.get("tiktok_handle") else ""
+        star = " ★ (ช่องทางหลัก)" if item.get("is_default") else ""
+        return f"🏬 {item.get('name', c)}{handle}{star}"
+
+    cur_selected_shop_code = st.selectbox(
+        "🏬 เลือกร้านค้า / ช่องทาง TikTok Shop ของชุดข้อมูลนี้:",
+        options=shop_codes,
+        index=0,
+        format_func=_shop_lbl,
+        key="global_upload_shop_select",
+        help="เลือกร้านค้าเพื่อแยกเก็บผลการวิเคราะห์และส่งออกไฟล์ต้นทุนตามชื่อร้าน",
+    )
+    active_shop_info = shop_map.get(cur_selected_shop_code, shops_list[0])
+
+with col_s2:
+    if st.button("➕ เพิ่ม/จัดการช่องทาง", width="stretch", help="เพิ่มหรือแก้ไขรายชื่อช่องทาง TikTok"):
+        st.session_state["show_shop_manager_inline"] = not st.session_state.get("show_shop_manager_inline", False)
+
+if st.session_state.get("show_shop_manager_inline"):
+    with st.expander("🏬 จัดการรายชื่อร้านค้า / ช่องทาง TikTok Shop", expanded=True):
+        m_c1, m_c2 = st.columns([1.5, 1], gap="medium")
+        with m_c1:
+            st.markdown("###### รายชื่อช่องทางที่เปิดใช้งาน:")
+            st.dataframe(
+                pd.DataFrame(shops_list)[["code", "name", "tiktok_handle", "is_default"]].rename(
+                    columns={"code": "รหัสร้าน", "name": "ชื่อร้าน/ช่องทาง", "tiktok_handle": "TikTok Handle", "is_default": "ร้านหลัก"}
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        with m_c2:
+            st.markdown("###### ➕ เพิ่มช่องทางใหม่:")
+            with st.form("form_add_shop_inline", clear_on_submit=True):
+                new_s_code = st.text_input("รหัสร้าน (เช่น shop3, live_b) *").strip().lower()
+                new_s_name = st.text_input("ชื่อร้าน/ช่องทาง (เช่น ช่องไลฟ์ 2) *").strip()
+                new_s_handle = st.text_input("TikTok Handle (เช่น @my_shop)").strip()
+                new_s_def = st.checkbox("ตั้งเป็นร้านหลัก", value=False)
+                if st.form_submit_button("บันทึกช่องทางใหม่", type="primary", width="stretch"):
+                    if new_s_code and new_s_name:
+                        db.upsert_shop(new_s_code, new_s_name, new_s_handle, is_default=new_s_def)
+                        st.success(f"เพิ่มช่องทาง {new_s_name} เรียบร้อยแล้ว")
+                        st.session_state["show_shop_manager_inline"] = False
+                        st.rerun()
+                    else:
+                        st.error("กรุณากรอกรหัสร้านและชื่อร้าน")
+
 tab_dual_upload, tab_from_data, tab_multi_upload = st.tabs(
     [
         "📤 1. อัปโหลดไฟล์ (Income + คำสั่งซื้อ) — แนะนำใช้งาน",
@@ -326,6 +386,7 @@ with tab_dual_upload:
                         income_bytes=file_income.getvalue(),
                         order_items=[(fo.name, fo.getvalue()) for fo in files_order],
                         use_repo=use_repo,
+                        shop=active_shop_info,
                     )
                 except Exception as e:
                     st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
@@ -389,6 +450,7 @@ with tab_from_data:
                         income_bytes=(data_dir / income_choice).read_bytes(),
                         order_items=[(oc, (data_dir / oc).read_bytes()) for oc in order_choices],
                         use_repo=use_repo,
+                        shop=active_shop_info,
                     )
                 except Exception as e:
                     st.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
@@ -479,7 +541,7 @@ with tab_multi_upload:
                     if not should_split:
                         data = combine(books)
                         result = run_pipeline(data, sku_master)
-                        period = detect_period_label(result, [fn for fn, _ in raw_payloads])
+                        period = detect_period_label(result, [fn for fn, _ in raw_payloads], shop=active_shop_info)
 
                         for fname, raw_bytes in raw_payloads:
                             db.save_uploaded_excel(
@@ -490,7 +552,8 @@ with tab_multi_upload:
                             )
 
                         if is_admin():
-                            _save_period_snapshot(period, result)
+                            s_code = active_shop_info.get("code") if isinstance(active_shop_info, dict) else "matang"
+                            _save_period_snapshot(period, result, shop_code=s_code)
                             db.set_app_state("active_period", period)
 
                         st.session_state.update(result=result, period=period, raw=data, notes=data.notes)
@@ -502,7 +565,7 @@ with tab_multi_upload:
                         all_notes = []
                         for fname, raw_bytes, b in zip(raw_payloads, books):
                             res_i = run_pipeline(b, sku_master)
-                            p_name = detect_period_label(res_i, fname)
+                            p_name = detect_period_label(res_i, fname, shop=active_shop_info)
                             db.save_uploaded_excel(
                                 original_name=fname,
                                 raw_bytes=raw_bytes,
@@ -510,7 +573,8 @@ with tab_multi_upload:
                                 uploaded_by=user["username"],
                             )
                             if is_admin():
-                                _save_period_snapshot(p_name, res_i)
+                                s_code = active_shop_info.get("code") if isinstance(active_shop_info, dict) else "matang"
+                                _save_period_snapshot(p_name, res_i, shop_code=s_code)
                             saved_periods.append(p_name)
                             all_notes.extend(f"[{fname}] {n}" for n in b.notes)
                             last_res = res_i

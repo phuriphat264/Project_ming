@@ -139,6 +139,35 @@ def test_5_ui_component_metrics():
         assert not tr_df.empty, "daily_trend should not be empty"
         print(f"  ✓ Dashboard metrics verified: {len(sku_df)} SKUs, {len(cat_df)} categories, {len(tr_df)} days.")
 
+def test_6_multi_shop_lifecycle():
+    print("--- Test 6: Multi-Shop / Channel Architecture ---")
+    shops = db.list_shops()
+    codes = [s["code"] for s in shops]
+    assert "matang" in codes, "Default shop 'matang' must exist"
+    assert "dwine" in codes, "Shop 'dwine' must exist"
+
+    # Add new channel
+    db.upsert_shop("shop_tiktok_live", "ช่องไลฟ์ มาตัง", tiktok_handle="@matang_live")
+    updated = db.list_shops()
+    up_codes = [s["code"] for s in updated]
+    assert "shop_tiktok_live" in up_codes, "New shop must be listed"
+
+    # Test text detection
+    det = db.detect_shop_from_text("income_ดีไวน์_2026_09.xlsx")
+    assert det is not None and det["code"] == "dwine", f"Expected dwine, got {det}"
+
+    det2 = db.detect_shop_from_text("order_matang_live_09.xlsx")
+    assert det2 is not None and det2["code"] == "shop_tiktok_live", f"Expected shop_tiktok_live, got {det2}"
+
+    # Delete test shop
+    ok = db.delete_shop("shop_tiktok_live")
+    assert ok, "delete_shop should succeed for non-default shop"
+
+    # Verify main shop cannot be deleted
+    ok_main = db.delete_shop("matang")
+    assert not ok_main, "Main shop 'matang' must be protected from deletion"
+    print("  ✓ Multi-Shop lifecycle, auto-detection, and protection verified successfully!")
+
 if __name__ == "__main__":
     print("==================================================")
     print(" RUNNING ANTIGRAVITY COMPREHENSIVE SYSTEM TESTS   ")
@@ -148,6 +177,7 @@ if __name__ == "__main__":
     test_3_end_to_end_pipeline_and_export()
     test_4_backup_and_restore()
     test_5_ui_component_metrics()
+    test_6_multi_shop_lifecycle()
     print("==================================================")
     print(" ✅ ALL TESTS PASSED SUCCESSFULLY! ZERO BUGS FOUND")
     print("==================================================")

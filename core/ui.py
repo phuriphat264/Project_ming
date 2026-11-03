@@ -602,7 +602,7 @@ def build_saved_periods_comparison_df():
 
 
 def render_period_selector(container=None, key: str = "global_period_sel") -> str:
-    """กล่องเลือกสลับดู 'สรุปรวมทุกงวดทั้งหมด' หรือ 'แยกดูแต่ละเดือน' ใช้ร่วมกันทุกหน้า"""
+    """กล่องเลือกสลับดู 'สรุปรวมทุกงวดทั้งหมด' หรือ 'แยกดูแต่ละเดือน / แต่ละช่องทาง' ใช้ร่วมกันทุกหน้า"""
     from core.pipeline import ALL_PERIODS_KEY
 
     host = container if container is not None else st
@@ -622,12 +622,19 @@ def render_period_selector(container=None, key: str = "global_period_sel") -> st
 
     def _fmt(opt: str) -> str:
         if opt == ALL_PERIODS_KEY:
-            return f"📊 สรุปรวมทุกงวดทั้งหมด ({len(saved_months)} งวด)"
+            return f"📊 สรุปรวมทุกงวดและทุกช่องทาง ({len(saved_months)} งวด)"
         cnt = order_map.get(opt)
-        return f"📅 งวด {opt} ({int(cnt):,} ออเดอร์)" if cnt is not None else f"📅 งวด {opt} (ยังไม่บันทึก)"
+        cnt_str = f"({int(cnt):,} ออเดอร์)" if cnt is not None else "(ยังไม่บันทึก)"
+        if "(รวม)" in opt or "(รวมทุกงวด)" in opt:
+            return f"📈 [รวมทุกช่องทาง] {opt} {cnt_str}"
+        elif "(ดีไวน์)" in opt:
+            return f"🏬 [ดีไวน์] {opt} {cnt_str}"
+        elif "(" in opt and ")" in opt:
+            return f"🏬 {opt} {cnt_str}"
+        return f"🏬 [มาตัง] งวด {opt} {cnt_str}"
 
     selected = host.selectbox(
-        "📅 เลือกดูข้อมูล (แยกตามเดือน หรือ สรุปรวมทุกงวดทั้งหมด):",
+        "📅 เลือกดูข้อมูล (แยกตามเดือน / ช่องทาง หรือ สรุปรวมทุกงวดทั้งหมด):",
         options,
         index=idx,
         format_func=_fmt,
@@ -640,6 +647,60 @@ def render_period_selector(container=None, key: str = "global_period_sel") -> st
             st.session_state.update(result=new_res, period=selected, notes=[])
             st.rerun()
     return selected
+
+
+def build_channel_comparison_df(period_filter: str | None = None) -> pd.DataFrame:
+    """ดึงและคำนวณเปรียบเทียบผลประกอบการแยกตามแต่ละช่องทาง TikTok Shop"""
+    import pandas as pd
+    from core.metrics import summarize
+    from core.pipeline import ALL_PERIODS_KEY, recalculate_with_skus
+
+    snaps = db.list_snapshots()
+    if snaps.empty:
+        return pd.DataFrame()
+
+    sku_master = db.get_skus()
+    rows = []
+    target_snaps = snaps.copy()
+    if period_filter and period_filter != ALL_PERIODS_KEY:
+        base_m = period_filter.split()[0]
+        target_snaps = target_snaps[target_snaps["month"].str.startswith(base_m)]
+
+    # ข้ามงวด (รวม) เพื่อไม่ให้นับตัวเลขซ้ำ
+    non_merged = target_snaps[~target_snaps["month"].str.contains(r"\(รวม\)")].copy()
+    if non_merged.empty:
+        non_merged = target_snaps
+
+    shops_map = {s["code"]: s["name"] for s in db.list_shops()}
+
+    for _, row in non_merged.iterrows():
+        m = row["month"]
+        ld = db.load_snapshot(m)
+        if not ld:
+            continue
+        r_m = recalculate_with_skus(_snapshot_to_pipeline_result(ld), sku_master)
+        s_code = ld.get("shop_code") or "matang"
+        shop_title = shops_map.get(s_code) or ("ดีไวน์ (Dwine)" if "ดีไวน์" in m else "มาตัง (Matang)")
+        fc_m = db.total_fixed_cost(m)
+        cp_m = db.get_comm_pct(m)
+        s_m = summarize(r_m, fixed_costs=fc_m, comm_pct=cp_m)
+
+        margin_pct = (s_m.net_profit / s_m.net_sales * 100.0) if s_m.net_sales > 0 else 0.0
+        rows.append({
+            "ช่องทาง / ร้านค้า": f"{shop_title} ({m})",
+            "ชื่อร้าน": shop_title,
+            "งวด": m,
+            "จำนวนคำสั่งซื้อ": s_m.orders,
+            "จำนวนชิ้น": s_m.units,
+            "ยอดขายสุทธิ": s_m.net_sales,
+            "เงินโอนจริง (F)": s_m.net_settlement,
+            "ต้นทุนสินค้า (G)": s_m.cogs,
+            "กำไรสุทธิ (H)": s_m.settlement_profit,
+            "กำไรสุทธิสุดท้าย": s_m.net_profit,
+            "% อัตรากำไรสุทธิ": margin_pct,
+        })
+
+    return pd.DataFrame(rows)
 
 
 def require_result():

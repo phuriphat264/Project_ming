@@ -679,7 +679,11 @@ def recalculate_with_skus(res: PipelineResult, sku_master: pd.DataFrame) -> Pipe
     )
 
 
-def detect_period_label(result: PipelineResult, filenames: list[str] | str = "") -> str:
+def detect_period_label(
+    result: PipelineResult,
+    filenames: list[str] | str = "",
+    shop: dict | str | None = None,
+) -> str:
     """ตรวจจับงวดเดือน YYYY-MM อัตโนมัติจากวันที่ชำระ/สร้างคำสั่งซื้อ พร้อมแยกป้ายชื่อร้าน (เช่น ดีไวน์)"""
     dates = pd.to_datetime(result.orders["date"], errors="coerce").dropna()
     if dates.empty and "created_date" in result.orders.columns:
@@ -688,8 +692,30 @@ def detect_period_label(result: PipelineResult, filenames: list[str] | str = "")
         dates = pd.to_datetime(result.order_lines["Created Time"], errors="coerce").dropna()
     base_period = dates.dt.to_period("M").mode()[0].strftime("%Y-%m") if not dates.empty else "ไม่ทราบงวด"
 
+    # 1. หากผู้ใช้เลือก Shop หรือส่ง Shop เข้ามาโดยตรง
+    if shop:
+        s_code = shop.get("code") if isinstance(shop, dict) else str(shop).lower()
+        s_name = shop.get("name") if isinstance(shop, dict) else str(shop)
+        clean_tag = s_name.split()[0].strip("()[]")
+        if s_code == "matang" or clean_tag in ("มาตัง", "matang"):
+            return base_period
+        return f"{base_period} ({clean_tag})"
+
+    # 2. ตรวจจับจากรายชื่อไฟล์
     names_list = [filenames] if isinstance(filenames, str) else list(filenames)
     fnames_joined = " ".join(names_list)
+
+    try:
+        from core import db
+        detected = db.detect_shop_from_text(fnames_joined)
+        if detected:
+            clean_tag = detected["name"].split()[0].strip("()[]")
+            if detected["code"] == "matang" or clean_tag in ("มาตัง", "matang"):
+                return base_period
+            return f"{base_period} ({clean_tag})"
+    except Exception:
+        pass
+
     if len(names_list) > 1 and "ดีไวน์" in fnames_joined:
         has_non_divine = any("ดีไวน์" not in fn for fn in names_list)
         return f"{base_period} (รวม)" if has_non_divine else f"{base_period} (ดีไวน์)"
