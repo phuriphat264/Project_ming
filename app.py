@@ -9,7 +9,7 @@ ensure_fresh()
 
 import streamlit as st
 
-from core import db
+from core import db, order_repo
 from core.pipeline import ALL_PERIODS_KEY
 from core.ui import (
     baht,
@@ -19,6 +19,7 @@ from core.ui import (
     render_page_header,
     render_section_header,
     require_login,
+    set_current_shop,
     summarize_for_period,
 )
 
@@ -32,10 +33,105 @@ active_period = st.session_state.get("period", latest_period or "-")
 
 render_page_header(
     title="🏢 Matang Cosmetic Cost & Profit System",
-    subtitle="ระบบอัตโนมัติคำนวณต้นทุนสินค้า (COGS), ค่าธรรมเนียม TikTok Shop และกำไรสุทธิแท้จริง",
+    subtitle="ระบบอัตโนมัติคำนวณต้นทุนสินค้า (COGS), ค่าธรรมเนียม TikTok Shop และกำไรสุทธิแท้จริง แยกตามช่องทาง",
     period=active_period,
+    shop=cur_shop,
 )
 
+# -----------------------------------------------------------------------------
+# ศูนย์เลือกช่องทาง / ร้านค้า TikTok Shop (Channel Selection Gateway)
+# -----------------------------------------------------------------------------
+all_shops = db.list_shops(active_only=True)
+
+render_section_header(
+    "🏬 เลือกช่องทาง / ร้านค้า TikTok เพื่อเข้าทำงาน (Channel Gateway)",
+    subtitle="กดเลือกช่องทางที่ต้องการจัดการ เพื่อแยกข้อมูล ออเดอร์ และไฟล์ต้นทุนอย่างปลอดภัย 100%",
+    icon="🎯",
+)
+
+n_cols = max(1, min(len(all_shops), 4))
+shop_cols = st.columns(n_cols, gap="medium")
+
+for idx, s in enumerate(all_shops):
+    col = shop_cols[idx % n_cols]
+    s_code = s["code"]
+    s_name = s["name"]
+    s_handle = s.get("tiktok_handle") or ""
+    is_active = (s_code == cur_shop["code"])
+
+    s_snaps = db.list_snapshots(shop_code=s_code)
+    s_periods_cnt = len(s_snaps)
+    s_sales_total = float(s_snaps["net_sales"].sum()) if not s_snaps.empty and "net_sales" in s_snaps.columns else 0.0
+    s_repo_cnt = order_repo.repo_summary(shop_code=s_code)["orders"]
+
+    with col:
+        border_color = "#4f46e5" if is_active else "#cbd5e1"
+        bg_color = "linear-gradient(135deg, #eef2ff 0%, #ffffff 100%)" if is_active else "#ffffff"
+        badge_html = (
+            '<span style="background:#4f46e5;color:white;padding:3px 10px;border-radius:12px;font-size:0.75rem;font-weight:700;">🟢 กำลังทำงานในช่องนี้</span>'
+            if is_active
+            else '<span style="background:#f1f5f9;color:#64748b;padding:3px 10px;border-radius:12px;font-size:0.75rem;font-weight:600;">⚪ ช่องทางย่อย</span>'
+        )
+
+        st.markdown(
+            f"""
+            <div style="background:{bg_color};border:2px solid {border_color};border-radius:16px;padding:16px 18px;margin-bottom:10px;box-shadow:0 4px 15px rgba(15,23,42,0.04);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                    <div style="font-size:1.5rem;">🏬</div>
+                    <div>{badge_html}</div>
+                </div>
+                <div style="font-size:1.15rem;font-weight:800;color:#0f172a;line-height:1.3;min-height:48px;">
+                    {s_name}
+                </div>
+                <div style="font-size:0.85rem;color:#6366f1;font-weight:600;margin-bottom:12px;">
+                    {s_handle or '@ช่องทาง TikTok'}
+                </div>
+                <div style="background:#f8fafc;border-radius:10px;padding:10px 12px;font-size:0.85rem;color:#475569;display:flex;flex-direction:column;gap:4px;">
+                    <div>📅 ข้อมูลที่บันทึก: <b>{s_periods_cnt:,} งวด</b></div>
+                    <div>💰 ยอดขายสะสม: <b>{baht(s_sales_total) if user['role'] == 'admin' else '-'}</b></div>
+                    <div>📦 คลังคำสั่งซื้อ: <b>{s_repo_cnt:,} ออเดอร์</b></div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if is_active:
+            st.button("✅ ใช้งานช่องนี้อยู่", key=f"active_btn_{s_code}", disabled=True, width="stretch")
+        else:
+            if st.button("👉 เลือกทำงานช่องนี้", key=f"switch_to_{s_code}", type="primary", width="stretch"):
+                set_current_shop(s_code)
+                st.rerun()
+
+if user["role"] == "admin":
+    with st.expander("➕ เพิ่ม/แก้ไข ช่องทาง TikTok Shop ใหม่"):
+        col_add1, col_add2 = st.columns([1.5, 1.2])
+        with col_add1:
+            with st.form("form_home_add_shop", clear_on_submit=True):
+                st.markdown("##### ➕ เพิ่มร้านค้า/ช่องทาง TikTok Shop ใหม่")
+                add_code = st.text_input("รหัสช่องทาง (ภาษาอังกฤษ เช่น buntee2) *", placeholder="เช่น buntee2").strip().lower()
+                add_name = st.text_input("ชื่อร้านค้า/ช่องทาง *", placeholder="เช่น ช่อง 2 BUNGTEE").strip()
+                add_handle = st.text_input("TikTok Handle", placeholder="@bungtee_official").strip()
+                add_def = st.checkbox("ตั้งเป็นร้านหลัก", value=False)
+                if st.form_submit_button("บันทึกช่องทางใหม่", type="primary", width="stretch"):
+                    if add_code and add_name:
+                        db.upsert_shop(add_code, add_name, add_handle, is_default=add_def)
+                        st.toast(f"✅ เพิ่มช่องทาง {add_name} สำเร็จแล้ว", icon="🏬")
+                        st.rerun()
+                    else:
+                        st.error("กรุณาระบุรหัสและชื่อร้าน")
+        with col_add2:
+            st.markdown("##### ℹ️ เกี่ยวกับระบบ Multi-Channel")
+            st.caption(
+                "• แต่ละช่องทางจะมีคลังคำสั่งซื้อสะสม (Order Repository) และข้อมูลงวดที่แยกจากกันอย่างสมบูรณ์ 100%\n"
+                "• เมื่อคุณสลับช่องทาง ข้อมูล ยอดขาย และกำไรจะเปลี่ยนตามช่องทางนั้นทันที\n"
+                "• สามารถส่งออกไฟล์ต้นทุนรวมเฉพาะของแต่ละช่องทางได้"
+            )
+
+st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+# ข้อมูลสรุปของช่องทางที่เลือก (Selected Channel Overview)
+# -----------------------------------------------------------------------------
 total_periods = len(snapshots)
 if not snapshots.empty and user["role"] == "admin":
     all_sales = float(snapshots["net_sales"].sum()) if "net_sales" in snapshots.columns else 0.0
@@ -46,18 +142,25 @@ else:
 
 c1, c2, c3 = st.columns(3, gap="medium")
 with c1:
-    render_kpi_card("สินค้าในระบบทั้งหมด", f"{len(skus):,} รายการ", f"บันทึกแล้ว {total_periods:,} งวด ({cur_shop['name']})", delta="SKU Master Active", delta_positive=True, icon="📦")
+    render_kpi_card(
+        f"สินค้าในระบบทั้งหมด",
+        f"{len(skus):,} รายการ",
+        f"บันทึกแล้ว {total_periods:,} งวด ({cur_shop['name']})",
+        delta="SKU Master Active",
+        delta_positive=True,
+        icon="📦",
+    )
 with c2:
     render_kpi_card(
-        f"รายได้รวมทุกงวด ({cur_shop['name']})" if total_periods > 0 else f"รายได้รวม ({cur_shop['name']})",
+        f"รายได้รวม ({cur_shop['name']})" if total_periods > 0 else f"รายได้รวม ({cur_shop['name']})",
         baht(all_sales) if (total_periods > 0 and user["role"] == "admin") else "-",
-        f"งวดล่าสุด: {latest_period or '-'}",
-        delta="ยอดขายรวม" if total_periods > 0 else None,
+        f"งวดล่าสุด: {latest_period or 'ยังไม่มีข้อมูล'}",
+        delta=f"{total_periods} งวดที่บันทึก" if total_periods > 0 else "ยังไม่มีงวด",
         icon="💰",
     )
 with c3:
     render_kpi_card(
-        f"กำไรสุทธิรวมทุกงวด ({cur_shop['name']})" if total_periods > 0 else f"กำไรสุทธิ ({cur_shop['name']})",
+        f"กำไรสุทธิรวม ({cur_shop['name']})" if total_periods > 0 else f"กำไรสุทธิ ({cur_shop['name']})",
         baht(all_profit) if (total_periods > 0 and user["role"] == "admin") else "-",
         delta="กำไรสุทธิสะสม" if all_profit >= 0 else "ขาดทุนสะสม",
         delta_positive=all_profit >= 0,

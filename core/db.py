@@ -769,16 +769,25 @@ def list_sku_mappings(db_path: Path | None = None) -> pd.DataFrame:
         )
 
 
-def load_snapshot(month: str, db_path: Path | None = None) -> dict | None:
+def load_snapshot(month: str, db_path: Path | None = None, shop_code: str | None = None) -> dict | None:
     init_db(db_path)
     with connect(db_path) as c:
-        row = c.execute(
-            """
-            SELECT summary_json, source, warnings_json, shop_code
-            FROM monthly_snapshots WHERE month = ?
-            """,
-            (month,),
-        ).fetchone()
+        if shop_code and shop_code != "all":
+            row = c.execute(
+                """
+                SELECT summary_json, source, warnings_json, shop_code
+                FROM monthly_snapshots WHERE month = ? AND (shop_code = ? OR shop_code IS NULL)
+                """,
+                (month, shop_code),
+            ).fetchone()
+        else:
+            row = c.execute(
+                """
+                SELECT summary_json, source, warnings_json, shop_code
+                FROM monthly_snapshots WHERE month = ?
+                """,
+                (month,),
+            ).fetchone()
 
     if not row:
         return None

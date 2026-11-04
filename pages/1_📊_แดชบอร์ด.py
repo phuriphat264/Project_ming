@@ -25,6 +25,7 @@ from core.ui import (
     baht,
     build_channel_comparison_df,
     build_saved_periods_comparison_df,
+    get_current_shop,
     get_period_financial_params,
     render_kpi_card,
     render_page_header,
@@ -39,8 +40,9 @@ require_login(admin_only=True)
 res_full = require_result()
 period = st.session_state.get("period", "")
 
-snapshots = db.list_snapshots()
-render_page_header(title="📊 เช็กกำไร / ขาดทุน ตามโครงสร้าง TikTok Shop", period=period)
+cur_shop = get_current_shop()
+snapshots = db.list_snapshots(shop_code=cur_shop["code"])
+render_page_header(title="📊 เช็กกำไร / ขาดทุน ตามโครงสร้าง TikTok Shop", period=period, shop=cur_shop)
 
 # เลือกสลับเดือน หรือ สรุปรวมทุกงวดทั้งหมด + ทางลัดไปหน้าแก้ไขต้นทุน/ค่าใช้จ่าย
 top_bar_1, top_bar_2 = st.columns([1.5, 1.5], gap="medium")
@@ -65,7 +67,7 @@ if selected_cal_ym != "ทั้งหมด":
     active_label = f"{period} → เดือน {selected_cal_ym}"
 else:
     res = res_full
-    fixed_total, comm_pct, override_comm = get_period_financial_params(period)
+    fixed_total, comm_pct, override_comm = get_period_financial_params(period, shop_code=cur_shop["code"])
     active_label = period
 
 with top_bar_2:

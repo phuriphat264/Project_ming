@@ -62,10 +62,151 @@ from core.ui import (
 
 user = require_login()
 
+# -----------------------------------------------------------------------------
+# เลือกช่องทาง / ร้านค้า TikTok Shop (Multi-Channel Support)
+# -----------------------------------------------------------------------------
+shops_list = db.list_shops(active_only=True)
+shop_codes = [s["code"] for s in shops_list]
+shop_map = {s["code"]: s for s in shops_list}
+
+active_shop = get_current_shop()
+if "global_upload_shop_select" not in st.session_state or st.session_state["global_upload_shop_select"] not in shop_codes:
+    st.session_state["global_upload_shop_select"] = active_shop["code"]
+
+col_s1, col_s2 = st.columns([3, 1.2], vertical_alignment="bottom")
+with col_s1:
+    def _shop_lbl(c: str) -> str:
+        item = shop_map.get(c, {})
+        handle = f" ({item.get('tiktok_handle')})" if item.get("tiktok_handle") else ""
+        star = " ★ (ช่องทางหลัก)" if item.get("is_default") else ""
+        return f"🏬 {item.get('name', c)}{handle}{star}"
+
+    def _on_upload_shop_change():
+        sel_c = st.session_state.get("global_upload_shop_select")
+        if sel_c:
+            set_current_shop(sel_c)
+            st.rerun()
+
+    cur_selected_shop_code = st.selectbox(
+        "🏬 เลือกร้านค้า / ช่องทาง TikTok Shop ที่ต้องการจัดการ:",
+        options=shop_codes,
+        format_func=_shop_lbl,
+        key="global_upload_shop_select",
+        on_change=_on_upload_shop_change,
+        help="เลือกร้านค้าเพื่อแยกเก็บผลการวิเคราะห์และส่งออกไฟล์ต้นทุนตามชื่อร้าน",
+    )
+    active_shop_info = shop_map.get(cur_selected_shop_code, shops_list[0])
+
+with col_s2:
+    if st.button("➕ เพิ่ม/จัดการช่องทาง", width="stretch", help="เพิ่มหรือแก้ไขรายชื่อช่องทาง TikTok"):
+        st.session_state["show_shop_manager_inline"] = not st.session_state.get("show_shop_manager_inline", False)
+
+if st.session_state.get("show_shop_manager_inline"):
+    with st.expander("🏬 จัดการรายชื่อร้านค้า / ช่องทาง TikTok Shop (เพิ่ม, แก้ไข, ลบ)", expanded=True):
+        m_c1, m_c2 = st.columns([1.3, 1.2], gap="medium")
+        with m_c1:
+            st.markdown("###### รายชื่อช่องทางทั้งหมดในระบบ:")
+            all_db_shops = db.list_shops(active_only=False)
+            df_sh = pd.DataFrame(all_db_shops)
+            if not df_sh.empty:
+                df_sh["สถานะ"] = df_sh["is_active"].apply(lambda a: "🟢 เปิด" if a else "⚪ ปิด")
+                df_sh["ประเภท"] = df_sh["is_default"].apply(lambda d: "★ ร้านหลัก" if d else "ร้านย่อย")
+                st.dataframe(
+                    df_sh[["code", "name", "tiktok_handle", "ประเภท", "สถานะ"]].rename(
+                        columns={"code": "รหัสร้าน", "name": "ชื่อร้าน/ช่องทาง", "tiktok_handle": "TikTok Handle"}
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
+
+        with m_c2:
+            tab_sm_add, tab_sm_edit, tab_sm_del = st.tabs(["➕ เพิ่มร้านใหม่", "✏️ แก้ไขร้าน", "🗑️ ลบร้าน"])
+            with tab_sm_add:
+                with st.form("form_add_shop_inline", clear_on_submit=True):
+                    new_s_code = st.text_input("รหัสร้าน (ภาษาอังกฤษ เช่น live1) *", placeholder="เช่น live1").strip().lower()
+                    new_s_name = st.text_input("ชื่อร้าน/ช่องทาง *", placeholder="เช่น มาตัง ไลฟ์สด 1").strip()
+                    new_s_handle = st.text_input("TikTok Handle", placeholder="@matang_live").strip()
+                    new_s_def = st.checkbox("ตั้งเป็นร้านหลัก", value=False)
+                    if st.form_submit_button("➕ บันทึกร้านค้าใหม่", type="primary", width="stretch"):
+                        if new_s_code and new_s_name:
+                            db.upsert_shop(new_s_code, new_s_name, new_s_handle, is_default=new_s_def)
+                            st.toast(f"✅ เพิ่มช่องทาง {new_s_name} เรียบร้อยแล้ว", icon="🏬")
+                            st.rerun()
+                        else:
+                            st.error("กรุณากรอกรหัสร้านและชื่อร้าน")
+
+            with tab_sm_edit:
+                all_codes = [s["code"] for s in all_db_shops]
+                ed_code = st.selectbox("เลือกร้านที่ต้องการแก้ไข:", options=all_codes, key="inline_sel_edit_shop")
+                cur_s_data = next((s for s in all_db_shops if s["code"] == ed_code), all_db_shops[0])
+                with st.form("form_edit_shop_inline"):
+                    st.text_input("รหัสร้าน (Code)", value=cur_s_data["code"], disabled=True)
+                    ed_name = st.text_input("ชื่อร้าน / ช่องทาง *", value=cur_s_data["name"]).strip()
+                    ed_handle = st.text_input("TikTok Handle", value=cur_s_data["tiktok_handle"]).strip()
+                    ed_def = st.checkbox("ตั้งเป็นร้านหลัก", value=bool(cur_s_data["is_default"]))
+                    ed_act = st.checkbox("เปิดใช้งาน", value=bool(cur_s_data["is_active"]))
+                    if st.form_submit_button("💾 บันทึกการแก้ไข", type="primary", width="stretch"):
+                        if ed_name:
+                            db.upsert_shop(cur_s_data["code"], ed_name, ed_handle, is_default=ed_def, is_active=ed_act)
+                            st.toast(f"✅ อัปเดตข้อมูลร้าน {ed_name} สำเร็จแล้ว", icon="🎉")
+                            st.rerun()
+                        else:
+                            st.error("กรุณากรอกชื่อร้าน")
+
+            with tab_sm_del:
+                del_list = [s["code"] for s in all_db_shops if not s.get("is_default") and len(all_db_shops) > 1]
+                if del_list:
+                    d_code = st.selectbox("เลือกร้านที่ต้องการลบ:", options=del_list, key="inline_sel_del_shop")
+                    d_shop_info = next((s for s in all_db_shops if s["code"] == d_code), None)
+                    d_name = d_shop_info["name"] if d_shop_info else d_code
+                    st.warning(f"⚠️ ยืนยันการลบช่องทาง **{d_name} (`{d_code}`)**?")
+                    if st.button(f"🗑️ ลบ {d_code} ทันที", type="secondary", width="stretch", key="btn_del_shop_inline"):
+                        if db.delete_shop(d_code):
+                            if st.session_state.get("active_shop_code") == d_code:
+                                st.session_state.pop("active_shop_code", None)
+                                st.session_state.pop("global_upload_shop_select", None)
+                                st.session_state.pop("sidebar_active_shop_dropdown", None)
+                            st.toast(f"ลบช่องทาง {d_name} เรียบร้อยแล้ว", icon="🗑️")
+                            st.rerun()
+                        else:
+                            st.error("ไม่สามารถลบร้านค้านี้ได้")
+                else:
+                    st.info("ℹ️ ไม่มีช่องทางย่อยที่สามารถลบได้ (ร้านที่ตั้งเป็น 'ร้านหลัก' หรือร้านสุดท้ายในระบบจะไม่สามารถลบได้ หากต้องการลบ กรุณาตั้งร้านอื่นเป็นร้านหลักก่อน)")
+
+b_type = "★ ช่องทางหลัก" if active_shop_info.get("is_default") else "ช่องทางย่อย"
+h_txt = f" ({active_shop_info.get('tiktok_handle')})" if active_shop_info.get("tiktok_handle") else ""
+
 render_page_header(
     "ระบบจัดการและคำนวณต้นทุนรวม (TikTok Shop)",
     subtitle="นำเข้า 2 ไฟล์ (คำสั่งซื้อ + Income) หรืออ่านจากโฟลเดอร์ data เพื่อสร้างไฟล์ต้นทุนรวม ต้นทุน(ปี-เดือน).xlsx อัตโนมัติ",
     period=st.session_state.get("period"),
+    shop=active_shop_info,
+)
+
+st.markdown(
+    f"""
+    <div style="background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+                border: 1.5px solid #818cf8; border-radius: 14px; padding: 14px 20px; margin-top: 6px; margin-bottom: 20px;
+                box-shadow: 0 4px 15px rgba(99, 102, 241, 0.08); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 14px;">
+            <div style="width: 44px; height: 44px; border-radius: 12px; background: #4f46e5; color: white; display: flex; align-items: center; justify-content: center; font-size: 1.4rem;">
+                🏬
+            </div>
+            <div>
+                <div style="font-size: 0.80rem; font-weight: 700; color: #4338ca; text-transform: uppercase; letter-spacing: 0.05em;">
+                    กำลังทำงานในร้านค้า ({b_type})
+                </div>
+                <div style="font-size: 1.25rem; font-weight: 800; color: #1e1b4b;">
+                    {active_shop_info.get('name')}{h_txt} <span style="font-size: 0.92rem; font-weight: 600; color: #6366f1;">(รหัส: {cur_selected_shop_code})</span>
+                </div>
+            </div>
+        </div>
+        <div style="background: #ffffff; border: 1px solid #c7d2fe; border-radius: 10px; padding: 7px 16px; font-size: 0.88rem; color: #4338ca; font-weight: 700;">
+            📁 ไฟล์และผลการคำนวณจะถูกบันทึกเข้าสู่ร้านค้านี้
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 
@@ -444,7 +585,7 @@ if _flash:
 # ------------------------------------------------------------------------------
 # สถานะคลังคำสั่งซื้อสะสม + คำแนะนำว่ารอบนี้ต้องใส่ไฟล์ Order กี่ไฟล์
 # ------------------------------------------------------------------------------
-repo_info = order_repo.repo_summary()
+repo_info = order_repo.repo_summary(shop_code=cur_selected_shop_code)
 repo_empty = repo_info["orders"] == 0
 
 with st.container(border=True):
@@ -453,7 +594,7 @@ with st.container(border=True):
         st.markdown("#### 🗄️ คลังคำสั่งซื้อสะสม (Order Repository)")
         if repo_empty:
             st.info(
-                "🟢 **เริ่มระบบครั้งแรก:** คลังยังว่าง — กรุณาใส่ **Income 1 ไฟล์ + ไฟล์คำสั่งซื้อ 2 ไฟล์** "
+                f"🟢 **เริ่มระบบครั้งแรกของ {active_shop_info['name']}:** คลังยังว่าง — กรุณาใส่ **Income 1 ไฟล์ + ไฟล์คำสั่งซื้อ 2 ไฟล์** "
                 "(เดือนก่อน + เดือนนี้ เช่น Order8 + Order9) เพราะ Income หนึ่งรอบมีออเดอร์ที่สั่งปลายเดือนก่อนปนอยู่ด้วย"
             )
         else:
@@ -478,7 +619,7 @@ with st.container(border=True):
                     st.caption("เลือกเดือนที่ต้องการลบออกจากคลัง (เดือนอื่นจะยังอยู่ครบ)")
                     del_m = st.selectbox("เลือกเดือนที่ต้องการลบ:", month_list, key="sel_del_repo_m")
                     if st.button(f"🗑️ ยืนยันลบเดือน {del_m}", type="primary", key="btn_del_single_repo_m", width="stretch"):
-                        cnt = order_repo.delete_month_from_repo(del_m)
+                        cnt = order_repo.delete_month_from_repo(del_m, shop_code=cur_selected_shop_code)
                         for k in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_rep_key", "_cached_rep_master_xlsx", "_cached_rep_xlsx", "sel_del_repo_m"):
                             st.session_state.pop(k, None)
                         st.toast(f"ลบออเดอร์เดือน {del_m} ออกจากคลังเรียบร้อยแล้ว ({cnt:,} ออเดอร์)", icon="🗑️")
@@ -489,7 +630,7 @@ with st.container(border=True):
                     st.markdown("##### ⚠️ 2. ล้างคลังทั้งหมด (Reset ทั้งระบบ)")
                     st.caption("ลบออเดอร์ทุกเดือนทิ้งทั้งหมด (รอบถัดไปต้องใส่ไฟล์ Order 2 ไฟล์ใหม่)")
                     if st.button("ยืนยันล้างคลังทั้งหมด", type="secondary", key="btn_clear_order_repo", width="stretch"):
-                        order_repo.clear_repo()
+                        order_repo.clear_repo(shop_code=cur_selected_shop_code)
                         for k in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_rep_key", "_cached_rep_master_xlsx", "_cached_rep_xlsx", "sel_del_repo_m"):
                             st.session_state.pop(k, None)
                         st.toast("ล้างคลังคำสั่งซื้อสะสมทั้งหมดแล้ว", icon="🗑️")
@@ -504,145 +645,6 @@ def _check_order_count(n_files: int) -> None:
             "⚠️ คลังคำสั่งซื้อยังว่าง และเลือกไฟล์ Order ไว้แค่ 1 ไฟล์ — ออเดอร์ที่สั่งในเดือนก่อน "
             "(แต่เงินเข้ารอบนี้) จะหาต้นทุนไม่เจอ แนะนำให้เพิ่มไฟล์ Order เดือนก่อนหน้าอีก 1 ไฟล์"
         )
-
-
-# -----------------------------------------------------------------------------
-# เลือกช่องทาง / ร้านค้า TikTok Shop (Multi-Channel Support)
-# -----------------------------------------------------------------------------
-shops_list = db.list_shops(active_only=True)
-shop_codes = [s["code"] for s in shops_list]
-shop_map = {s["code"]: s for s in shops_list}
-
-active_shop = get_current_shop()
-if "global_upload_shop_select" not in st.session_state or st.session_state["global_upload_shop_select"] not in shop_codes:
-    st.session_state["global_upload_shop_select"] = active_shop["code"]
-
-col_s1, col_s2 = st.columns([3, 1.2], vertical_alignment="bottom")
-with col_s1:
-    def _shop_lbl(c: str) -> str:
-        item = shop_map.get(c, {})
-        handle = f" ({item.get('tiktok_handle')})" if item.get("tiktok_handle") else ""
-        star = " ★ (ช่องทางหลัก)" if item.get("is_default") else ""
-        return f"🏬 {item.get('name', c)}{handle}{star}"
-
-    def _on_upload_shop_change():
-        sel_c = st.session_state.get("global_upload_shop_select")
-        if sel_c:
-            set_current_shop(sel_c)
-
-    cur_selected_shop_code = st.selectbox(
-        "🏬 เลือกร้านค้า / ช่องทาง TikTok Shop ของชุดข้อมูลนี้:",
-        options=shop_codes,
-        format_func=_shop_lbl,
-        key="global_upload_shop_select",
-        on_change=_on_upload_shop_change,
-        help="เลือกร้านค้าเพื่อแยกเก็บผลการวิเคราะห์และส่งออกไฟล์ต้นทุนตามชื่อร้าน",
-    )
-    active_shop_info = shop_map.get(cur_selected_shop_code, shops_list[0])
-
-with col_s2:
-    if st.button("➕ เพิ่ม/จัดการช่องทาง", width="stretch", help="เพิ่มหรือแก้ไขรายชื่อช่องทาง TikTok"):
-        st.session_state["show_shop_manager_inline"] = not st.session_state.get("show_shop_manager_inline", False)
-
-if st.session_state.get("show_shop_manager_inline"):
-    with st.expander("🏬 จัดการรายชื่อร้านค้า / ช่องทาง TikTok Shop (เพิ่ม, แก้ไข, ลบ)", expanded=True):
-        m_c1, m_c2 = st.columns([1.3, 1.2], gap="medium")
-        with m_c1:
-            st.markdown("###### รายชื่อช่องทางทั้งหมดในระบบ:")
-            all_db_shops = db.list_shops(active_only=False)
-            df_sh = pd.DataFrame(all_db_shops)
-            if not df_sh.empty:
-                df_sh["สถานะ"] = df_sh["is_active"].apply(lambda a: "🟢 เปิด" if a else "⚪ ปิด")
-                df_sh["ประเภท"] = df_sh["is_default"].apply(lambda d: "★ ร้านหลัก" if d else "ร้านย่อย")
-                st.dataframe(
-                    df_sh[["code", "name", "tiktok_handle", "ประเภท", "สถานะ"]].rename(
-                        columns={"code": "รหัสร้าน", "name": "ชื่อร้าน/ช่องทาง", "tiktok_handle": "TikTok Handle"}
-                    ),
-                    hide_index=True,
-                    width="stretch",
-                )
-
-        with m_c2:
-            tab_sm_add, tab_sm_edit, tab_sm_del = st.tabs(["➕ เพิ่มร้านใหม่", "✏️ แก้ไขร้าน", "🗑️ ลบร้าน"])
-            with tab_sm_add:
-                with st.form("form_add_shop_inline", clear_on_submit=True):
-                    new_s_code = st.text_input("รหัสร้าน (ภาษาอังกฤษ เช่น live1) *", placeholder="เช่น live1").strip().lower()
-                    new_s_name = st.text_input("ชื่อร้าน/ช่องทาง *", placeholder="เช่น มาตัง ไลฟ์สด 1").strip()
-                    new_s_handle = st.text_input("TikTok Handle", placeholder="@matang_live").strip()
-                    new_s_def = st.checkbox("ตั้งเป็นร้านหลัก", value=False)
-                    if st.form_submit_button("➕ บันทึกร้านค้าใหม่", type="primary", width="stretch"):
-                        if new_s_code and new_s_name:
-                            db.upsert_shop(new_s_code, new_s_name, new_s_handle, is_default=new_s_def)
-                            st.toast(f"✅ เพิ่มช่องทาง {new_s_name} เรียบร้อยแล้ว", icon="🏬")
-                            st.rerun()
-                        else:
-                            st.error("กรุณากรอกรหัสร้านและชื่อร้าน")
-
-            with tab_sm_edit:
-                all_codes = [s["code"] for s in all_db_shops]
-                ed_code = st.selectbox("เลือกร้านที่ต้องการแก้ไข:", options=all_codes, key="inline_sel_edit_shop")
-                cur_s_data = next((s for s in all_db_shops if s["code"] == ed_code), all_db_shops[0])
-                with st.form("form_edit_shop_inline"):
-                    st.text_input("รหัสร้าน (Code)", value=cur_s_data["code"], disabled=True)
-                    ed_name = st.text_input("ชื่อร้าน / ช่องทาง *", value=cur_s_data["name"]).strip()
-                    ed_handle = st.text_input("TikTok Handle", value=cur_s_data["tiktok_handle"]).strip()
-                    ed_def = st.checkbox("ตั้งเป็นร้านหลัก", value=bool(cur_s_data["is_default"]))
-                    ed_act = st.checkbox("เปิดใช้งาน", value=bool(cur_s_data["is_active"]))
-                    if st.form_submit_button("💾 บันทึกการแก้ไข", type="primary", width="stretch"):
-                        if ed_name:
-                            db.upsert_shop(cur_s_data["code"], ed_name, ed_handle, is_default=ed_def, is_active=ed_act)
-                            st.toast(f"✅ อัปเดตข้อมูลร้าน {ed_name} สำเร็จแล้ว", icon="🎉")
-                            st.rerun()
-                        else:
-                            st.error("กรุณากรอกชื่อร้าน")
-
-            with tab_sm_del:
-                del_list = [s["code"] for s in all_db_shops if not s.get("is_default") and len(all_db_shops) > 1]
-                if del_list:
-                    d_code = st.selectbox("เลือกร้านที่ต้องการลบ:", options=del_list, key="inline_sel_del_shop")
-                    d_shop_info = next((s for s in all_db_shops if s["code"] == d_code), None)
-                    d_name = d_shop_info["name"] if d_shop_info else d_code
-                    st.warning(f"⚠️ ยืนยันการลบช่องทาง **{d_name} (`{d_code}`)**?")
-                    if st.button(f"🗑️ ลบ {d_code} ทันที", type="secondary", width="stretch", key="btn_del_shop_inline"):
-                        if db.delete_shop(d_code):
-                            if st.session_state.get("active_shop_code") == d_code:
-                                st.session_state.pop("active_shop_code", None)
-                                st.session_state.pop("global_upload_shop_select", None)
-                                st.session_state.pop("sidebar_active_shop_dropdown", None)
-                            st.toast(f"ลบช่องทาง {d_name} เรียบร้อยแล้ว", icon="🗑️")
-                            st.rerun()
-                        else:
-                            st.error("ไม่สามารถลบร้านค้านี้ได้")
-                else:
-                    st.info("ℹ️ ไม่มีช่องทางย่อยที่สามารถลบได้ (ร้านที่ตั้งเป็น 'ร้านหลัก' หรือร้านสุดท้ายในระบบจะไม่สามารถลบได้ หากต้องการลบ กรุณาตั้งร้านอื่นเป็นร้านหลักก่อน)")
-
-b_type = "★ ช่องทางหลัก" if active_shop_info.get("is_default") else "ช่องทางย่อย"
-h_txt = f" ({active_shop_info.get('tiktok_handle')})" if active_shop_info.get("tiktok_handle") else ""
-st.markdown(
-    f"""
-    <div style="background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
-                border: 1.5px solid #818cf8; border-radius: 14px; padding: 14px 20px; margin-top: 14px; margin-bottom: 20px;
-                box-shadow: 0 4px 15px rgba(99, 102, 241, 0.08); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
-        <div style="display: flex; align-items: center; gap: 14px;">
-            <div style="width: 44px; height: 44px; border-radius: 12px; background: #4f46e5; color: white; display: flex; align-items: center; justify-content: center; font-size: 1.4rem;">
-                🏬
-            </div>
-            <div>
-                <div style="font-size: 0.80rem; font-weight: 700; color: #4338ca; text-transform: uppercase; letter-spacing: 0.05em;">
-                    กำลังทำงานในร้านค้า ({b_type})
-                </div>
-                <div style="font-size: 1.25rem; font-weight: 800; color: #1e1b4b;">
-                    {active_shop_info.get('name')}{h_txt} <span style="font-size: 0.92rem; font-weight: 600; color: #6366f1;">(รหัส: {cur_selected_shop_code})</span>
-                </div>
-            </div>
-        </div>
-        <div style="background: #ffffff; border: 1px solid #c7d2fe; border-radius: 10px; padding: 7px 16px; font-size: 0.88rem; color: #4338ca; font-weight: 700;">
-            📁 ไฟล์และผลการคำนวณจะถูกบันทึกเข้าสู่ร้านค้านี้
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
 tab_dual_upload, tab_from_data, tab_multi_upload = st.tabs(
     [
@@ -948,9 +950,9 @@ st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
 
 
 # ==============================================================================
-# สลับเลือกดูงวด / ดึงข้อมูล Snapshot ที่เคยบันทึกไว้
+# สลับเลือกดูงวด / ดึงข้อมูล Snapshot ที่เคยบันทึกไว้ แยกตามร้านค้า
 # ==============================================================================
-snapshots = db.list_snapshots()
+snapshots = db.list_snapshots(shop_code=cur_selected_shop_code)
 saved_months = snapshots["month"].tolist() if not snapshots.empty else []
 cur_period = st.session_state.get("period", "")
 
@@ -972,7 +974,7 @@ if not snapshots.empty:
             key="active_snapshot_selector",
         )
         if col_btn_open.button("📂 เปิดดูข้อมูลนี้", type="primary", width="stretch", key="btn_open_snap"):
-            loaded_res = load_period_result(selected_snap)
+            loaded_res = load_period_result(selected_snap, shop_code=cur_selected_shop_code)
             if loaded_res is not None:
                 db.set_app_state("active_period", selected_snap)
                 st.session_state.update(result=loaded_res, period=selected_snap, notes=[])
@@ -1003,7 +1005,7 @@ if not snapshots.empty:
                 st.toast("ลบข้อมูลงวดทั้งหมดเรียบร้อยแล้ว", icon="🗑️")
             else:
                 db.delete_snapshot(selected_snap)
-                rem_snaps = db.list_snapshots()
+                rem_snaps = db.list_snapshots(shop_code=cur_selected_shop_code)
                 rem_months = rem_snaps["month"].tolist() if not rem_snaps.empty else []
 
                 if not rem_months:
@@ -1015,7 +1017,7 @@ if not snapshots.empty:
                     # ถ้ากำลังดูงวดที่ถูกลบ หรือสรุปรวมทุกงวด ให้สลับไปยังงวดที่ยังคงเหลืออยู่ทันที
                     if cur_period == selected_snap or cur_period == ALL_PERIODS_KEY or cur_period not in rem_months:
                         next_target = ALL_PERIODS_KEY if len(rem_months) >= 2 else rem_months[0]
-                        new_res = load_period_result(next_target)
+                        new_res = load_period_result(next_target, shop_code=cur_selected_shop_code)
                         if new_res is not None:
                             db.set_app_state("active_period", next_target)
                             st.session_state.update(result=new_res, period=next_target, notes=[])
@@ -1025,7 +1027,7 @@ if not snapshots.empty:
                             db.set_app_state("active_period", "")
                     else:
                         # ถ้างวดที่กำลังดูอยู่คืองวดอื่นที่ไม่ได้โดนลบ ให้โหลดใหม่เพื่อให้แน่ใจว่าฐานข้อมูลอัปเดตตรงกัน
-                        new_res = load_period_result(cur_period)
+                        new_res = load_period_result(cur_period, shop_code=cur_selected_shop_code)
                         if new_res is not None:
                             st.session_state.update(result=new_res, period=cur_period, notes=[])
 
@@ -1034,7 +1036,7 @@ if not snapshots.empty:
 
 res = st.session_state.get("result")
 
-# ถ้าระบบมี snapshot บันทึกไว้ แต่ใน session_state ว่างเปล่า ให้โหลดงวดล่าสุดอัตโนมัติ
+# ถ้าระบบมี snapshot บันทึกไว้ของร้านค้านี้ แต่ใน session_state ว่างเปล่า ให้โหลดงวดล่าสุดอัตโนมัติ
 if res is None and not snapshots.empty:
     saved_p = db.get_app_state("active_period")
     if saved_p == ALL_PERIODS_KEY and len(saved_months) >= 2:
@@ -1046,14 +1048,14 @@ if res is None and not snapshots.empty:
     else:
         auto_target = saved_months[0]
 
-    loaded_res = load_period_result(auto_target)
+    loaded_res = load_period_result(auto_target, shop_code=cur_selected_shop_code)
     if loaded_res is not None:
         db.set_app_state("active_period", auto_target)
         st.session_state.update(result=loaded_res, period=auto_target, notes=[])
         res = loaded_res
 
 if res is None:
-    st.info("💡 กรุณาเลือกอ่านข้อมูลจากโฟลเดอร์ data/ หรืออัปโหลดไฟล์ในส่วนที่ 1 เพื่อเริ่มดูข้อมูลและดาวน์โหลดไฟล์ต้นทุนรวม")
+    st.info(f"💡 ร้านค้า **{active_shop_info['name']}** ยังไม่มีข้อมูลที่บันทึกไว้ในระบบ กรุณานำเข้าไฟล์ในขั้นตอนที่ 1 ด้านบน เพื่อเริ่มคำนวณและดูผลลัพธ์")
     st.stop()
 
 cur_period = st.session_state.get("period", "ไม่ทราบงวด")

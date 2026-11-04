@@ -299,27 +299,31 @@ def get_current_shop() -> dict:
 
 
 def set_current_shop(code: str) -> None:
-    """กำหนดรหัสร้านค้าที่กำลังเลือกใช้งานอยู่ และสลับข้อมูลงวดให้อัตโนมัติ (แยกข้อมูลตามร้านค้า)"""
+    """กำหนดรหัสร้านค้าที่กำลังเลือกใช้งานอยู่ และสลับข้อมูลงวดให้อัตโนมัติ (แยกข้อมูลตามร้านค้า 100%)"""
     old_code = st.session_state.get("active_shop_code")
     st.session_state["active_shop_code"] = code
+    st.session_state["global_upload_shop_select"] = code
 
     if old_code != code:
         # สลับข้อมูลงวดและผลลัพธ์ไปยังร้านค้าที่เลือกทันที
+        # ล้างคีย์ผลลัพธ์เดิมและคีย์ widget ตัวเลือกงวดเดิมทิ้งทั้งหมด ป้องกันข้อมูลตกค้างข้ามร้าน
+        for k in (
+            "result", "period", "raw", "notes",
+            "_cached_master_excel_bytes", "_cached_master_excel_key",
+            "_cached_rep_xlsx", "_cached_rep_key",
+            "dash_period_sel", "global_period_sel", "adv_period_sel", "rep_period_sel",
+        ):
+            st.session_state.pop(k, None)
+
         snaps = db.list_snapshots(shop_code=code)
         if not snaps.empty:
             target_p = snaps.iloc[0]["month"]
             st.session_state["period"] = target_p
             new_res = load_period_result(target_p, shop_code=code)
             st.session_state["result"] = new_res
+            db.set_app_state("active_period", target_p)
         else:
-            # ร้านนี้ยังไม่มีงวดข้อมูล ให้ล้างผลลัพธ์ของร้านเดิมออกเพื่อไม่ให้ข้อมูลปนกัน!
-            for k in ("result", "period", "raw", "notes"):
-                st.session_state.pop(k, None)
-        # ล้างแคชไฟล์ Excel ที่อาจค้างมาจากร้านเดิม
-        st.session_state.pop("_cached_master_excel_bytes", None)
-        st.session_state.pop("_cached_master_excel_key", None)
-        st.session_state.pop("_cached_rep_xlsx", None)
-        st.session_state.pop("_cached_rep_key", None)
+            db.set_app_state("active_period", "")
 
 
 def render_page_header(
@@ -647,38 +651,43 @@ def load_period_result(period: str, shop_code: str | None = None):
     from core.pipeline import ALL_PERIODS_KEY, combine_pipeline_results, recalculate_with_skus
 
     sku_master = db.get_skus()
+    if shop_code is None:
+        cur_s = get_current_shop()
+        shop_code = cur_s.get("code")
+
     if period == ALL_PERIODS_KEY:
-        if shop_code is None:
-            cur_s = get_current_shop()
-            shop_code = cur_s.get("code")
         snaps = db.list_snapshots(shop_code=shop_code) if (shop_code and shop_code != "all") else db.list_snapshots()
         if snaps.empty:
             return None
         ordered_months = _distinct_saved_months(snaps["month"].tolist())
         loaded_list = []
         for m in ordered_months:
-            ld = db.load_snapshot(m)
+            ld = db.load_snapshot(m, shop_code=shop_code)
             if ld:
                 loaded_list.append(_snapshot_to_pipeline_result(ld))
         if not loaded_list:
             return None
         return combine_pipeline_results(loaded_list, sku_master)
 
-    loaded = db.load_snapshot(period)
+    loaded = db.load_snapshot(period, shop_code=shop_code)
     if not loaded:
         return None
     return recalculate_with_skus(_snapshot_to_pipeline_result(loaded), sku_master)
 
 
-def get_period_financial_params(period: str) -> tuple[float, float, float | None]:
-    """คืนค่า (fixed_costs_total, comm_pct, override_sales_commission) รองรับทั้งงวดเดียวและรวมทุกงวด"""
+def get_period_financial_params(period: str, shop_code: str | None = None) -> tuple[float, float, float | None]:
+    """คืนค่า (fixed_costs_total, comm_pct, override_sales_commission) รองรับทั้งงวดเดียวและรวมทุกงวด แยกตามร้านค้า"""
     from core.metrics import summarize
     from core.pipeline import ALL_PERIODS_KEY, build_order_row_keys, recalculate_with_skus
 
     if period != ALL_PERIODS_KEY:
         return db.total_fixed_cost(period), db.get_comm_pct(period), None
 
-    snaps = db.list_snapshots()
+    if shop_code is None:
+        cur_s = get_current_shop()
+        shop_code = cur_s.get("code")
+
+    snaps = db.list_snapshots(shop_code=shop_code) if (shop_code and shop_code != "all") else db.list_snapshots()
     if snaps.empty:
         return 0.0, 0.0, 0.0
 
@@ -690,7 +699,7 @@ def get_period_financial_params(period: str) -> tuple[float, float, float | None
     total_rough_pos = 0.0
 
     for m in ordered_months:
-        ld = db.load_snapshot(m)
+        ld = db.load_snapshot(m, shop_code=shop_code)
         if not ld:
             continue
         r_m = recalculate_with_skus(_snapshot_to_pipeline_result(ld), sku_master)
@@ -712,11 +721,11 @@ def get_period_financial_params(period: str) -> tuple[float, float, float | None
     return total_fixed, eff_pct, total_comm
 
 
-def summarize_for_period(res, period: str):
+def summarize_for_period(res, period: str, shop_code: str | None = None):
     """คำนวณ Summary สำหรับงวดที่เลือก (รองรับทั้งงวดรายเดือนและสรุปรวมทุกงวดทั้งหมด)"""
     from core.metrics import summarize
 
-    fixed_total, comm_pct, override_comm = get_period_financial_params(period)
+    fixed_total, comm_pct, override_comm = get_period_financial_params(period, shop_code=shop_code)
     return summarize(
         res,
         fixed_costs=fixed_total,
@@ -728,26 +737,30 @@ def summarize_for_period(res, period: str):
 _COMP_DF_CACHE: tuple[str, pd.DataFrame] | None = None
 
 
-def build_saved_periods_comparison_df():
-    """สร้างตารางเปรียบเทียบผลประกอบการของทุกงวดที่บันทึกไว้ในระบบ (มีแคชรวดเร็วระดับเสี้ยววินาที)"""
+def build_saved_periods_comparison_df(shop_code: str | None = None):
+    """สร้างตารางเปรียบเทียบผลประกอบการของทุกงวดที่บันทึกไว้ในระบบ แยกตามร้านค้า"""
     global _COMP_DF_CACHE
     import pandas as pd
     from core.metrics import monthly_comparison_table, summarize
     from core.pipeline import recalculate_with_skus
 
-    snaps = db.list_snapshots()
+    if shop_code is None:
+        cur_s = get_current_shop()
+        shop_code = cur_s.get("code")
+
+    snaps = db.list_snapshots(shop_code=shop_code) if (shop_code and shop_code != "all") else db.list_snapshots()
     if snaps.empty:
         return pd.DataFrame()
 
     sku_master = db.get_skus()
-    cache_sig = f"{','.join(snaps['month'].tolist())}_{len(sku_master)}"
+    cache_sig = f"{shop_code}_{','.join(snaps['month'].tolist())}_{len(sku_master)}"
     if _COMP_DF_CACHE is not None and _COMP_DF_CACHE[0] == cache_sig:
         return _COMP_DF_CACHE[1].copy()
 
     months_asc = sorted(snaps["month"].tolist())
     rows = []
     for m in months_asc:
-        ld = db.load_snapshot(m)
+        ld = db.load_snapshot(m, shop_code=shop_code)
         if not ld:
             continue
         r_m = recalculate_with_skus(_snapshot_to_pipeline_result(ld), sku_master)
