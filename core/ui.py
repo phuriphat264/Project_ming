@@ -189,28 +189,38 @@ button[kind="secondary"]:hover, [data-testid="baseButton-secondary"]:hover {
 }
 
 /* 6.1 ตกแต่ง Selectbox ไม่ให้เป็นกล่องดำ */
-.stSelectbox div[data-baseweb="select"] > div {
+.stSelectbox div[data-baseweb="select"], .stSelectbox div[data-baseweb="select"] > div {
     background-color: #ffffff !important;
     border: 1px solid #cbd5e1 !important;
     color: #0f172a !important;
     border-radius: 12px !important;
 }
 
-.stSelectbox div[data-baseweb="select"] span {
+.stSelectbox div[data-baseweb="select"] span, .stSelectbox div[data-baseweb="select"] input {
     color: #0f172a !important;
     font-weight: 600 !important;
 }
 
+.stSelectbox div[data-baseweb="select"] svg {
+    fill: #475569 !important;
+}
+
+[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"],
 [data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] > div {
-    background-color: rgba(30, 27, 75, 0.9) !important;
+    background-color: rgba(30, 27, 75, 0.95) !important;
     border: 1px solid #4338ca !important;
     color: #ffffff !important;
     border-radius: 12px !important;
 }
 
-[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] span {
+[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] span,
+[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] input {
     color: #ffffff !important;
     font-weight: 600 !important;
+}
+
+[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] svg {
+    fill: #c7d2fe !important;
 }
 
 /* 7. แท็บ (Tabs) สไตล์ Segmented Floating Pill */

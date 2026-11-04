@@ -56,6 +56,7 @@ from core.ui import (
     render_page_header,
     render_section_header,
     require_login,
+    set_current_shop,
     summarize_for_period,
 )
 
@@ -259,7 +260,7 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
                 min_value=0.0,
                 step=1.0,
                 value=prefill_cost if prefill_cost > 0 else 0.0,
-                format="฿%.2f",
+                format="%.2f",
                 key=f"{key_prefix}_input_assigned_cost",
                 help="ต้นทุนต่อ 1 ชิ้นของสินค้านี้",
             )
@@ -268,7 +269,7 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
                 min_value=0.0,
                 step=1.0,
                 value=prefill_list if prefill_list > 0 else float(sku_to_list.get(orig_sku, 0.0)),
-                format="฿%.2f",
+                format="%.2f",
                 key=f"{key_prefix}_input_assigned_list",
             )
             assigned_cat = st.text_input(
