@@ -483,6 +483,10 @@ if st.session_state.get("show_shop_manager_inline"):
                     st.warning(f"⚠️ ยืนยันการลบช่องทาง **{d_name} (`{d_code}`)**?")
                     if st.button(f"🗑️ ลบ {d_code} ทันที", type="secondary", width="stretch", key="btn_del_shop_inline"):
                         if db.delete_shop(d_code):
+                            if st.session_state.get("active_shop_code") == d_code:
+                                st.session_state.pop("active_shop_code", None)
+                                st.session_state.pop("global_upload_shop_select", None)
+                                st.session_state.pop("sidebar_active_shop_dropdown", None)
                             st.toast(f"ลบช่องทาง {d_name} เรียบร้อยแล้ว", icon="🗑️")
                             st.rerun()
                         else:

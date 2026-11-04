@@ -121,6 +121,10 @@ with tab_shops:
                             st.error("⚠️ กรุณาระบุชื่อร้าน")
                         else:
                             db.upsert_shop(shop_data["code"], e_name, e_handle, is_default=e_def, is_active=e_act)
+                            if e_def:
+                                st.session_state["active_shop_code"] = shop_data["code"]
+                                st.session_state["sidebar_active_shop_dropdown"] = shop_data["code"]
+                                st.session_state["global_upload_shop_select"] = shop_data["code"]
                             st.success(f"อัปเดตข้อมูลร้าน {e_name} สำเร็จแล้ว!")
                             st.rerun()
 
@@ -142,6 +146,10 @@ with tab_shops:
                         st.warning(f"⚠️ คุณแน่ใจหรือไม่ว่าต้องการลบช่องทาง **{shop_data['name']} (`{shop_data['code']}`)**? (การลบนี้ไม่สามารถย้อนคืนได้)")
                         if st.button(f"ยืนยันการลบช่องทาง {shop_data['code']}", type="secondary", width="stretch", key=f"btn_del_shop_{shop_data['code']}"):
                             if db.delete_shop(shop_data["code"]):
+                                if st.session_state.get("active_shop_code") == shop_data["code"]:
+                                    st.session_state.pop("active_shop_code", None)
+                                    st.session_state.pop("global_upload_shop_select", None)
+                                    st.session_state.pop("sidebar_active_shop_dropdown", None)
                                 st.success(f"ลบช่องทาง {shop_data['name']} เรียบร้อยแล้ว")
                                 st.session_state["shop_mgmt_mode"] = "➕ เพิ่มร้านค้าใหม่"
                                 st.session_state.pop("editing_shop_code", None)

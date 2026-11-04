@@ -70,28 +70,45 @@ with st.container(border=True):
     if not res.withdrawals.empty:
         export_sheets["บันทึกการถอน"] = res.withdrawals
 
+    sku_master_df = db.get_skus()
+    excel_cache_key = f"{period}_{len(res.orders)}_{len(sku_master_df)}"
+    has_cached_master = (
+        st.session_state.get("_cached_master_excel_key") == excel_cache_key
+        and st.session_state.get("_cached_master_excel_bytes") is not None
+    )
+
     rep_cache_key = f"rep_{period}_{len(res.orders)}"
     if st.session_state.get("_cached_rep_key") != rep_cache_key:
-        with st.spinner("กำลังเตรียมไฟล์ Excel สำหรับดาวน์โหลด (ครั้งแรก)..."):
-            master_cost_xlsx = build_company_cost_master_excel(res, db.get_skus(), period_label=period)
-            xlsx = to_excel(s, export_sheets)
-            st.session_state["_cached_rep_master_xlsx"] = master_cost_xlsx
-            st.session_state["_cached_rep_xlsx"] = xlsx
-            st.session_state["_cached_rep_key"] = rep_cache_key
+        xlsx = to_excel(s, export_sheets)
+        st.session_state["_cached_rep_xlsx"] = xlsx
+        st.session_state["_cached_rep_key"] = rep_cache_key
     else:
-        master_cost_xlsx = st.session_state["_cached_rep_master_xlsx"]
         xlsx = st.session_state["_cached_rep_xlsx"]
 
     with e0:
-        st.download_button(
-            f"🎯 ดาวน์โหลดไฟล์ต้นทุนรวม ({thai_cost_name})",
-            master_cost_xlsx,
-            file_name=thai_cost_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            width="stretch",
-            key="rep_btn_master_cost",
-        )
+        if has_cached_master:
+            st.download_button(
+                f"🎯 ดาวน์โหลดไฟล์ต้นทุนรวม ({thai_cost_name})",
+                st.session_state["_cached_master_excel_bytes"],
+                file_name=thai_cost_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                width="stretch",
+                key="rep_btn_master_cost",
+            )
+        else:
+            if st.button(
+                f"⚡ 1-Click สร้างไฟล์ต้นทุนรวม ({thai_cost_name})",
+                type="primary",
+                width="stretch",
+                key="rep_btn_build_master",
+                help="คลิกเพื่อประมวลผลไฟล์ต้นทุนรวม 7 ชีตฉบับเต็ม",
+            ):
+                with st.spinner("กำลังสร้างไฟล์ต้นทุนรวม 7 ชีต..."):
+                    b = build_company_cost_master_excel(res, sku_master_df, period_label=period)
+                    st.session_state["_cached_master_excel_bytes"] = b
+                    st.session_state["_cached_master_excel_key"] = excel_cache_key
+                    st.rerun()
 
     with e1:
         st.download_button(
