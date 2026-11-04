@@ -250,6 +250,22 @@ def build_order_lines(orders: pd.DataFrame, sku_master: pd.DataFrame) -> pd.Data
         # หากมีค่าตัวเลขล้วน 10 หลักขึ้นไปที่อาจเคยหลุดมาจาก SKU ID ให้ล้างออกเป็นค่าว่าง
         lines["Seller SKU"] = lines["Seller SKU"].mask(lines["Seller SKU"].str.fullmatch(r"\d{10,}"), "")
 
+    # หาก Seller SKU ว่างอยู่ ให้ตรวจดูตาราง product_sku_mappings ที่ผู้ใช้เคยจับคู่/กำหนดรหัสไว้
+    if "Product Name" in lines.columns:
+        try:
+            from .db import get_sku_mappings
+            p_mappings = get_sku_mappings()
+            if p_mappings:
+                clean_pn = lines["Product Name"].fillna("").astype(str).str.strip()
+                empty_sku_mask = lines["Seller SKU"] == ""
+                if empty_sku_mask.any():
+                    mapped = clean_pn[empty_sku_mask].map(p_mappings)
+                    can_fill_map = mapped.notna() & (mapped != "")
+                    if can_fill_map.any():
+                        lines.loc[mapped[can_fill_map].index, "Seller SKU"] = mapped[can_fill_map]
+        except Exception:
+            pass
+
     lines = lines.merge(master, on="Seller SKU", how="left")
     lines["cost_missing"] = lines["unit_cost"].isna() | (lines["unit_cost"] <= 0)
     lines["unit_cost"] = pd.to_numeric(lines["unit_cost"], errors="coerce").fillna(0.0)

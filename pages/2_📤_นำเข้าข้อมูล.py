@@ -107,9 +107,10 @@ def _process_income_with_orders(
     combined = combine([b_inc, *b_ords])
     new_raw_orders = combined.raw_orders.copy()  # เฉพาะ Order ที่อัปโหลดรอบนี้ (ใช้บันทึกลงคลัง)
 
+    s_code = shop.get("code") if isinstance(shop, dict) else (shop or "matang")
     pulled = 0
     if use_repo:
-        combined, pulled = order_repo.attach_repo_orders(combined)
+        combined, pulled = order_repo.attach_repo_orders(combined, shop_code=s_code)
 
     if not combined.orders.empty:
         db.add_missing_skus(extract_order_skus(combined.orders))
@@ -122,9 +123,8 @@ def _process_income_with_orders(
     for fname, fbytes in [(income_name, income_bytes), *order_items]:
         db.save_uploaded_excel(original_name=fname, raw_bytes=fbytes, period=period, uploaded_by=user["username"])
 
-    repo_stat = order_repo.save_to_repo(new_raw_orders)
+    repo_stat = order_repo.save_to_repo(new_raw_orders, shop_code=s_code)
 
-    s_code = shop.get("code") if isinstance(shop, dict) else (shop or "matang")
     if is_admin():
         _save_period_snapshot(period, result, shop_code=s_code)
         db.set_app_state("active_period", period)
@@ -160,9 +160,9 @@ def _process_income_with_orders(
 
 
 def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: str = "top") -> None:
-    """ตารางกรอกราคาทุนสินค้าที่ขาดบนหน้าเว็บ พร้อมบันทึกและคำนวณกำไรใหม่ทันที"""
+    """ตารางและแบบฟอร์มกำหนดรหัส SKU และราคาทุนให้สินค้าที่ไม่มี SKU พร้อมคำนวณกำไรใหม่ทันที"""
     if res_obj.missing_skus.empty:
-        st.success("✅ สินค้าทุกรหัสในงวดนี้มีราคาทุนครบ 100% แล้ว")
+        st.success("✅ สินค้าทุกรหัสในงวดนี้มีรหัส SKU และราคาทุนครบ 100% แล้ว")
         return
 
     edit_df = res_obj.missing_skus.copy()
@@ -170,121 +170,243 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
     o_col = "orders_count" if "orders_count" in edit_df.columns else None
 
     sku_to_list = dict(zip(sku_df["sku"].astype(str).str.strip(), sku_df["list_price"]))
+    sku_to_cost = dict(zip(sku_df["sku"].astype(str).str.strip(), sku_df["unit_cost"]))
+    sku_to_name = dict(zip(sku_df["sku"].astype(str).str.strip(), sku_df["name"]))
 
-    edit_display = pd.DataFrame({
-        "รหัส SKU": edit_df["sku"].astype(str),
-        "ชื่อสินค้า": edit_df["name"].fillna("").astype(str),
-        "หมวดหมู่": edit_df["category"].fillna("ทั่วไป").astype(str),
-        "จำนวนที่ขาย (ชิ้น)": pd.to_numeric(edit_df[q_col], errors="coerce").fillna(0).astype(int),
-        "จำนวนออเดอร์": pd.to_numeric(edit_df[o_col], errors="coerce").fillna(1).astype(int) if o_col else 1,
-        "ราคาทุนต่อหน่วย (บาท)": 0.0,
-        "ราคาตั้งขาย (บาท)": edit_df["sku"].astype(str).str.strip().map(sku_to_list).fillna(0.0).astype(float),
-    })
-
+    # =========================================================================
+    # ส่วนที่ 1: แบบฟอร์มกำหนดรหัส SKU (ขอช่องใส่ SKU ให้ตัวที่ไม่มี SKU)
+    # =========================================================================
     st.markdown(
-        f"""
-        <div style="background: rgba(254, 243, 199, 0.5); border-left: 4px solid #f59e0b; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 0.9rem; color: #92400e;">
-            💡 <b>วิธีใส่ราคาทุน:</b> ดับเบิลคลิกที่ช่อง <b>'ราคาทุนต่อหน่วย (บาท) ⭐'</b> ในตารางด้านล่างเพื่อพิมพ์ตัวเลขต้นทุน แล้วกดปุ่ม <b>'💾 บันทึกราคาทุนและคำนวณใหม่ทันที'</b>
+        """
+        <div style="background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
+                    border-radius: 14px; padding: 16px 20px; margin-bottom: 16px; color: white;
+                    box-shadow: 0 4px 16px rgba(49, 46, 129, 0.25);">
+            <div style="font-size: 1.12rem; font-weight: 800; color: #ffffff; display: flex; align-items: center; gap: 8px;">
+                🏷️ กำหนดรหัส SKU และราคาทุนให้สินค้า (Manual SKU & Cost Assignment)
+            </div>
+            <div style="font-size: 0.88rem; color: #c7d2fe; margin-top: 4px;">
+                สำหรับสินค้าที่ไฟล์ TikTok ไม่มี Seller SKU มา คุณสามารถ <b>พิมพ์กำหนดรหัส SKU เอง</b> หรือ <b>เลือกจับคู่กับ SKU ที่มีอยู่แล้ว</b> ระบบจะบันทึกจำไว้ตลอดไป
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    edited_data = st.data_editor(
-        edit_display,
-        column_config={
-            "รหัส SKU": st.column_config.TextColumn("รหัส SKU", help="รหัสสินค้า (สามารถพิมพ์ตั้งรหัสใหม่ได้หากต้องการ)"),
-            "ชื่อสินค้า": st.column_config.TextColumn("ชื่อสินค้า", disabled=True),
-            "หมวดหมู่": st.column_config.TextColumn("หมวดหมู่", disabled=True),
-            "จำนวนที่ขาย (ชิ้น)": st.column_config.NumberColumn("จำนวนที่ขาย (ชิ้น)", disabled=True, format="%d"),
-            "จำนวนออเดอร์": st.column_config.NumberColumn("จำนวนออเดอร์", disabled=True, format="%d"),
-            "ราคาทุนต่อหน่วย (บาท)": st.column_config.NumberColumn(
-                "ราคาทุนต่อหน่วย (บาท) ⭐",
-                help="พิมพ์ราคาทุนต่อหน่วยของสินค้านี้ เช่น 85.00",
-                min_value=0.0,
-                step=1.0,
-                format="฿%.2f",
-                required=True,
-            ),
-            "ราคาตั้งขาย (บาท)": st.column_config.NumberColumn(
-                "ราคาตั้งขาย (บาท)",
-                min_value=0.0,
-                step=1.0,
-                format="฿%.2f",
-            ),
-        },
-        hide_index=True,
-        width="stretch",
-        key=f"{key_prefix}_missing_sku_editor",
+    items_list = edit_df.to_dict("records")
+    def _item_fmt(idx: int) -> str:
+        row = items_list[idx]
+        sku_lbl = f"[{row['sku']}] " if row['sku'] != "(ไม่ระบุ SKU)" else "[⚠️ ไม่มี SKU] "
+        qty_v = int(row[q_col]) if pd.notna(row[q_col]) else 0
+        ord_v = int(row[o_col]) if o_col and pd.notna(row[o_col]) else 1
+        return f"{sku_lbl}{str(row['name'])[:55]}... ({qty_v:,} ชิ้น / {ord_v:,} ออเดอร์)"
+
+    sel_idx = st.selectbox(
+        "📦 1. เลือกสินค้าที่ต้องการกำหนดรหัส SKU / ใส่ราคาทุน:",
+        options=list(range(len(items_list))),
+        format_func=_item_fmt,
+        key=f"{key_prefix}_sel_missing_item_idx",
     )
+    cur_item = items_list[sel_idx]
+    orig_name = str(cur_item.get("name", "")).strip()
+    orig_sku = str(cur_item.get("sku", "")).strip()
+    is_blank_sku = orig_sku in ("(ไม่ระบุ SKU)", "", "None", "nan")
 
-    c_save1, c_save2 = st.columns([2.5, 1.5], gap="medium")
-    with c_save1:
-        if st.button("💾 บันทึกราคาทุนที่กรอก และคำนวณใหม่ทันที ⚡", type="primary", width="stretch", key=f"{key_prefix}_btn_save_missing_skus"):
-            filled_rows = edited_data[edited_data["ราคาทุนต่อหน่วย (บาท)"] > 0]
-            if filled_rows.empty:
-                st.warning("⚠️ กรุณากรอกราคาทุนในช่อง 'ราคาทุนต่อหน่วย (บาท)' อย่างน้อย 1 สินค้าก่อนกดบันทึก")
-            else:
-                saved_count = 0
-                for _, r in filled_rows.iterrows():
-                    s_code = str(r["รหัส SKU"]).strip()
-                    p_name = str(r["ชื่อสินค้า"]).strip()
-                    if not s_code or s_code in ("(ไม่ระบุ SKU)", "nan", "None"):
-                        s_code = p_name
-                    db.upsert_sku(
-                        sku=s_code,
-                        name=p_name,
-                        category=str(r["หมวดหมู่"]).strip(),
-                        unit_cost=float(r["ราคาทุนต่อหน่วย (บาท)"]),
-                        list_price=float(r["ราคาตั้งขาย (บาท)"]),
-                    )
-                    saved_count += 1
+    with st.container(border=True):
+        st.markdown(f"**สินค้าที่เลือก:** `{orig_name}`")
+        f_col1, f_col2 = st.columns([1.5, 1.2], gap="large")
 
-                new_sku_df = db.get_skus()
-                updated_res = recalculate_with_skus(res_obj, new_sku_df)
-                st.session_state["result"] = updated_res
-                st.session_state.pop("_cached_master_excel_bytes", None)
-                st.session_state.pop("_cached_master_excel_key", None)
+        # รายการ SKU Master เดิมที่มีอยู่
+        master_skus = sku_df[sku_df["sku"].astype(str).str.strip() != ""].to_dict("records")
+        master_opts = ["-- หรือพิมพ์รหัส SKU ใหม่ในช่องด้านล่าง --"] + [
+            f"{s['sku']} | {str(s['name'])[:40]} (ทุน ฿{s['unit_cost']:.2f})" for s in master_skus
+        ]
 
-                s_code = getattr(updated_res, "source", None) or "matang"
-                if is_admin():
-                    _save_period_snapshot(period_name, updated_res, shop_code=s_code)
+        with f_col1:
+            sel_master = st.selectbox(
+                "🔗 เลือกจับคู่กับ SKU ที่มีอยู่ในระบบแล้ว (ถ้ามี):",
+                options=master_opts,
+                index=0,
+                key=f"{key_prefix}_sel_master_match",
+                help="หากสินค้านี้ตรงกับ SKU ใดในคลัง เลือกตรงนี้เพื่อดึงรหัสและราคาทุนมาใช้ทันที",
+            )
+            prefill_sku = ""
+            prefill_cost = 0.0
+            prefill_list = 0.0
+            if sel_master != master_opts[0]:
+                matched_sku_code = sel_master.split(" | ")[0].strip()
+                prefill_sku = matched_sku_code
+                prefill_cost = float(sku_to_cost.get(matched_sku_code, 0.0))
+                prefill_list = float(sku_to_list.get(matched_sku_code, 0.0))
+            elif not is_blank_sku:
+                prefill_sku = orig_sku
 
-                st.toast(f"✅ บันทึกราคาทุนสำเร็จ {saved_count} สินค้า และคำนวณกำไรใหม่แล้ว!", icon="🎉")
-                st.rerun()
+            assigned_sku = st.text_input(
+                "🏷️ ช่องพิมพ์รหัส SKU ที่ต้องการกำหนดให้สินค้านี้ *:",
+                value=prefill_sku,
+                placeholder="เช่น FZQCS009003 หรือ รหัสสินค้าที่ต้องการ",
+                key=f"{key_prefix}_input_assigned_sku",
+                help="พิมพ์รหัส SKU ของสินค้าชิ้นนี้ (ระบบจะผูกชื่อสินค้านี้เข้ากับรหัส SKU นี้ตลอดไป)",
+            )
+            assigned_name = st.text_input(
+                "📝 ชื่อสินค้า (แก้ไขได้หากต้องการ):",
+                value=orig_name,
+                key=f"{key_prefix}_input_assigned_name",
+            )
 
-    with c_save2:
-        if st.button("🔄 รีเซ็ตตาราง", width="stretch", key=f"{key_prefix}_btn_refresh_sku"):
-            st.rerun()
+        with f_col2:
+            assigned_cost = st.number_input(
+                "💵 ราคาทุนต่อหน่วย (บาท) *:",
+                min_value=0.0,
+                step=1.0,
+                value=prefill_cost if prefill_cost > 0 else 0.0,
+                format="฿%.2f",
+                key=f"{key_prefix}_input_assigned_cost",
+                help="ต้นทุนต่อ 1 ชิ้นของสินค้านี้",
+            )
+            assigned_list = st.number_input(
+                "🏷️ ราคาตั้งขาย (บาท):",
+                min_value=0.0,
+                step=1.0,
+                value=prefill_list if prefill_list > 0 else float(sku_to_list.get(orig_sku, 0.0)),
+                format="฿%.2f",
+                key=f"{key_prefix}_input_assigned_list",
+            )
+            assigned_cat = st.text_input(
+                "📁 หมวดหมู่สินค้า:",
+                value=str(cur_item.get("category", "ทั่วไป")),
+                key=f"{key_prefix}_input_assigned_cat",
+            )
 
-    with st.expander("➕ หรือเพิ่มราคาทุนทีละรายการผ่านแบบฟอร์ม (Manual Add Form)", expanded=False):
-        f_c1, f_c2 = st.columns(2)
-        with f_c1:
-            sku_options = edit_df["sku"].astype(str).tolist()
-            sel_sku = st.selectbox("เลือก SKU ที่ต้องการใส่ราคาทุน:", options=sku_options, key=f"{key_prefix}_sel_sku_form")
-            matched_items = edit_df[edit_df["sku"].astype(str) == sel_sku]
-            item_info = matched_items.iloc[0] if not matched_items.empty else None
-            p_name = st.text_input("ชื่อสินค้า:", value=str(item_info["name"]) if item_info is not None else "", key=f"{key_prefix}_pname_form")
-            p_cat = st.text_input("หมวดหมู่:", value=str(item_info["category"]) if item_info is not None else "ทั่วไป", key=f"{key_prefix}_pcat_form")
-        with f_c2:
-            p_cost = st.number_input("ราคาทุน (บาท) *:", min_value=0.0, step=1.0, value=0.0, key=f"{key_prefix}_pcost_form")
-            p_list = st.number_input("ราคาตั้งขาย (บาท):", min_value=0.0, step=1.0, value=float(sku_to_list.get(sel_sku, 0.0)), key=f"{key_prefix}_plist_form")
-            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            if st.button("➕ บันทึก SKU นี้", type="secondary", width="stretch", key=f"{key_prefix}_btn_add_single_sku"):
-                if p_cost <= 0:
-                    st.warning("⚠️ กรุณาระบุราคาทุนที่มากกว่า 0 บาท")
+            st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+            if st.button("💾 บันทึกรหัส SKU และคำนวณกำไรใหม่ทันที ⚡", type="primary", width="stretch", key=f"{key_prefix}_btn_assign_sku"):
+                clean_sku_val = assigned_sku.strip()
+                if not clean_sku_val or clean_sku_val in ("(ไม่ระบุ SKU)", "nan", "None"):
+                    st.error("⚠️ กรุณาระบุรหัส SKU ในช่อง '🏷️ ช่องพิมพ์รหัส SKU ที่ต้องการกำหนดให้สินค้านี้'")
+                elif assigned_cost <= 0:
+                    st.warning("⚠️ กรุณาระบุราคาทุนต่อหน่วยที่มากกว่า 0 บาท")
                 else:
-                    db.upsert_sku(sku=sel_sku, name=p_name, category=p_cat, unit_cost=p_cost, list_price=p_list)
+                    # 1. บันทึกการจับคู่ชื่อสินค้า -> SKU ลงฐานข้อมูล
+                    db.upsert_sku_mapping(orig_name, clean_sku_val)
+                    if assigned_name != orig_name:
+                        db.upsert_sku_mapping(assigned_name, clean_sku_val)
+
+                    # 2. บันทึก SKU เข้าสู่ Master
+                    db.upsert_sku(
+                        sku=clean_sku_val,
+                        name=assigned_name,
+                        category=assigned_cat.strip() or "ทั่วไป",
+                        unit_cost=assigned_cost,
+                        list_price=assigned_list,
+                    )
+
+                    # 3. อัปเดต Seller SKU ลงใน Order Lines ของชุดข้อมูลปัจจุบันทันที
+                    if not res_obj.order_lines.empty and "Product Name" in res_obj.order_lines.columns:
+                        mask_pn = res_obj.order_lines["Product Name"].fillna("").astype(str).str.strip() == orig_name
+                        res_obj.order_lines.loc[mask_pn, "Seller SKU"] = clean_sku_val
+
+                    # 4. คำนวณใหม่
                     new_sku_df = db.get_skus()
                     updated_res = recalculate_with_skus(res_obj, new_sku_df)
                     st.session_state["result"] = updated_res
                     st.session_state.pop("_cached_master_excel_bytes", None)
                     st.session_state.pop("_cached_master_excel_key", None)
+
                     s_code = getattr(updated_res, "source", None) or "matang"
                     if is_admin():
                         _save_period_snapshot(period_name, updated_res, shop_code=s_code)
-                    st.toast(f"✅ บันทึกราคาทุน {sel_sku} สำเร็จ!", icon="🎉")
+
+                    st.toast(f"✅ บันทึกรหัส SKU '{clean_sku_val}' และคำนวณกำไรใหม่เรียบร้อยแล้ว!", icon="🎉")
                     st.rerun()
+
+    # =========================================================================
+    # ส่วนที่ 2: ตาราง Data Editor สำหรับกรอกแบบเร็วหลายรายการ
+    # =========================================================================
+    with st.expander("📋 หรือเปิดตารางกรอกราคาทุนแบบตารางด่วน (Bulk Data Editor)", expanded=False):
+        edit_display = pd.DataFrame({
+            "รหัส SKU (ระบุรหัสได้ที่นี่ ⭐)": edit_df["sku"].astype(str).replace({"(ไม่ระบุ SKU)": ""}),
+            "ชื่อสินค้า": edit_df["name"].fillna("").astype(str),
+            "หมวดหมู่": edit_df["category"].fillna("ทั่วไป").astype(str),
+            "จำนวนที่ขาย (ชิ้น)": pd.to_numeric(edit_df[q_col], errors="coerce").fillna(0).astype(int),
+            "จำนวนออเดอร์": pd.to_numeric(edit_df[o_col], errors="coerce").fillna(1).astype(int) if o_col else 1,
+            "ราคาทุนต่อหน่วย (บาท)": 0.0,
+            "ราคาตั้งขาย (บาท)": edit_df["sku"].astype(str).str.strip().map(sku_to_list).fillna(0.0).astype(float),
+        })
+
+        st.caption("💡 ดับเบิลคลิกที่ช่อง 'รหัส SKU' เพื่อพิมพ์รหัส และดับเบิลคลิกที่ช่อง 'ราคาทุนต่อหน่วย' เพื่อพิมพ์ต้นทุน")
+        edited_data = st.data_editor(
+            edit_display,
+            column_config={
+                "รหัส SKU (ระบุรหัสได้ที่นี่ ⭐)": st.column_config.TextColumn(
+                    "รหัส SKU (ระบุรหัสได้ที่นี่ ⭐)",
+                    help="พิมพ์รหัสสินค้า SKU ได้โดยตรง เช่น FZQCS009003",
+                ),
+                "ชื่อสินค้า": st.column_config.TextColumn("ชื่อสินค้า", disabled=True),
+                "หมวดหมู่": st.column_config.TextColumn("หมวดหมู่", disabled=True),
+                "จำนวนที่ขาย (ชิ้น)": st.column_config.NumberColumn("จำนวนที่ขาย (ชิ้น)", disabled=True, format="%d"),
+                "จำนวนออเดอร์": st.column_config.NumberColumn("จำนวนออเดอร์", disabled=True, format="%d"),
+                "ราคาทุนต่อหน่วย (บาท)": st.column_config.NumberColumn(
+                    "ราคาทุนต่อหน่วย (บาท) ⭐",
+                    min_value=0.0,
+                    step=1.0,
+                    format="฿%.2f",
+                    required=True,
+                ),
+                "ราคาตั้งขาย (บาท)": st.column_config.NumberColumn(
+                    "ราคาตั้งขาย (บาท)",
+                    min_value=0.0,
+                    step=1.0,
+                    format="฿%.2f",
+                ),
+            },
+            hide_index=True,
+            width="stretch",
+            key=f"{key_prefix}_missing_sku_editor",
+        )
+
+        c_save1, c_save2 = st.columns([2.5, 1.5], gap="medium")
+        with c_save1:
+            if st.button("💾 บันทึกราคาทุนจากตาราง และคำนวณใหม่ทันที ⚡", type="primary", width="stretch", key=f"{key_prefix}_btn_save_missing_skus"):
+                filled_rows = edited_data[edited_data["ราคาทุนต่อหน่วย (บาท)"] > 0]
+                if filled_rows.empty:
+                    st.warning("⚠️ กรุณากรอกราคาทุนในช่อง 'ราคาทุนต่อหน่วย (บาท)' อย่างน้อย 1 สินค้าก่อนกดบันทึก")
+                else:
+                    saved_count = 0
+                    for _, r in filled_rows.iterrows():
+                        s_code = str(r["รหัส SKU (ระบุรหัสได้ที่นี่ ⭐)"]).strip()
+                        p_name = str(r["ชื่อสินค้า"]).strip()
+                        if s_code and s_code not in ("(ไม่ระบุ SKU)", "nan", "None"):
+                            db.upsert_sku_mapping(p_name, s_code)
+                            if not res_obj.order_lines.empty and "Product Name" in res_obj.order_lines.columns:
+                                mask_pn = res_obj.order_lines["Product Name"].fillna("").astype(str).str.strip() == p_name
+                                res_obj.order_lines.loc[mask_pn, "Seller SKU"] = s_code
+                        else:
+                            s_code = p_name
+
+                        db.upsert_sku(
+                            sku=s_code,
+                            name=p_name,
+                            category=str(r["หมวดหมู่"]).strip(),
+                            unit_cost=float(r["ราคาทุนต่อหน่วย (บาท)"]),
+                            list_price=float(r["ราคาตั้งขาย (บาท)"]),
+                        )
+                        saved_count += 1
+
+                    new_sku_df = db.get_skus()
+                    updated_res = recalculate_with_skus(res_obj, new_sku_df)
+                    st.session_state["result"] = updated_res
+                    st.session_state.pop("_cached_master_excel_bytes", None)
+                    st.session_state.pop("_cached_master_excel_key", None)
+
+                    s_code = getattr(updated_res, "source", None) or "matang"
+                    if is_admin():
+                        _save_period_snapshot(period_name, updated_res, shop_code=s_code)
+
+                    st.toast(f"✅ บันทึกข้อมูลสำเร็จ {saved_count} สินค้า และคำนวณกำไรใหม่แล้ว!", icon="🎉")
+                    st.rerun()
+
+        with c_save2:
+            if st.button("🔄 รีเซ็ตตาราง", width="stretch", key=f"{key_prefix}_btn_refresh_sku"):
+                st.rerun()
 
 
 # ==============================================================================
@@ -405,8 +527,7 @@ with col_s1:
     def _on_upload_shop_change():
         sel_c = st.session_state.get("global_upload_shop_select")
         if sel_c:
-            st.session_state["active_shop_code"] = sel_c
-            st.session_state["sidebar_active_shop_dropdown"] = sel_c
+            set_current_shop(sel_c)
 
     cur_selected_shop_code = st.selectbox(
         "🏬 เลือกร้านค้า / ช่องทาง TikTok Shop ของชุดข้อมูลนี้:",

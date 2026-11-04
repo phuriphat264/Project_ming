@@ -205,8 +205,13 @@ with k3:
         icon="🏭",
     )
 
-tab_sku, tab_fixed, tab_bulk = st.tabs(
-    ["📋 1. ตาราง SKU (รหัส / ชื่อ / ราคาทุน / ปลีก / โปร / ตั้งขาย)", "🏭 2. ค่าแรง / ค่าน้ำ / ค่าไฟ / ค่าคอมฯ", "📥 3. นำเข้า / ส่งออกชีต SKU"]
+tab_sku, tab_fixed, tab_mappings, tab_bulk = st.tabs(
+    [
+        "📋 1. ตาราง SKU (รหัส / ชื่อ / ราคาทุน / ปลีก / โปร / ตั้งขาย)",
+        "🏭 2. ค่าแรง / ค่าน้ำ / ค่าไฟ / ค่าคอมฯ",
+        "🔗 3. จับคู่ชื่อสินค้ากับ SKU (TikTok Name ↔ SKU)",
+        "📥 4. นำเข้า / ส่งออกชีต SKU",
+    ]
 )
 
 # ==================== TAB 1: SKU MASTER ====================
@@ -382,7 +387,66 @@ with tab_fixed:
             unsafe_allow_html=True,
         )
 
-# ==================== TAB 3: EXCEL IMPORT / EXPORT ====================
+# ==================== TAB 3: PRODUCT NAME TO SKU MAPPING ====================
+with tab_mappings:
+    with st.container(border=True):
+        st.markdown(
+            """
+            <div style="background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
+                        border-radius: 12px; padding: 14px 18px; margin-bottom: 16px; color: white;">
+                <div style="font-size: 1.05rem; font-weight: 800; color: #ffffff;">
+                    🔗 จับคู่ชื่อสินค้ากับรหัส SKU (Product Name ↔ SKU Mappings)
+                </div>
+                <div style="font-size: 0.88rem; color: #c7d2fe; margin-top: 4px;">
+                    ตารางนี้เก็บการเชื่อมโยงชื่อสินค้าที่ TikTok ส่งมาแบบไม่มี Seller SKU ให้ผูกกับรหัส SKU จริงในระบบอัตโนมัติ
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.expander("➕ เพิ่มการจับคู่ชื่อสินค้ากับรหัส SKU ใหม่", expanded=False):
+            with st.form("add_mapping_form"):
+                map_pname = st.text_input("ชื่อสินค้าจาก TikTok (ตรงตามที่ปรากฏในไฟล์) *:", placeholder="เช่น โปรเปย์เดย์ โดสไฮโดร 100 ml. 2 ขวด...")
+                master_sku_opts = [f"{s['sku']} | {str(s['name'])[:40]}" for s in skus.to_dict("records")]
+                map_sku_sel = st.selectbox("เลือกรหัส SKU ที่ต้องการผูก:", options=master_sku_opts if master_sku_opts else ["-- ไม่มี SKU --"])
+                map_custom_sku = st.text_input("หรือพิมพ์รหัส SKU ใหม่โดยตรง (ถ้าไม่อยู่ในรายการด้านบน):", placeholder="เช่น FZQCS009003")
+                if st.form_submit_button("💾 บันทึกการจับคู่", type="primary", width="stretch"):
+                    chosen_sku = map_custom_sku.strip() if map_custom_sku.strip() else (map_sku_sel.split(" | ")[0].strip() if " | " in map_sku_sel else "")
+                    if not map_pname.strip():
+                        st.error("กรุณาระบุชื่อสินค้า")
+                    elif not chosen_sku or chosen_sku.startswith("--"):
+                        st.error("กรุณาระบุรหัส SKU")
+                    else:
+                        db.upsert_sku_mapping(map_pname.strip(), chosen_sku)
+                        st.toast(f"บันทึกการจับคู่ '{chosen_sku}' สำเร็จแล้ว")
+                        st.rerun()
+
+        mappings_df = db.list_sku_mappings()
+        if mappings_df.empty:
+            st.info("ℹ️ ยังไม่มีรายการจับคู่ชื่อสินค้ากับ SKU ในระบบ (เมื่อนำเข้าไฟล์และกดบันทึก SKU ที่ขาด รายการจะปรากฏที่นี่อัตโนมัติ)")
+        else:
+            st.caption(f"พบการจับคู่ทั้งหมด **{len(mappings_df):,} รายการ**")
+            m_disp = mappings_df.rename(columns={
+                "product_name": "ชื่อสินค้าใน TikTok",
+                "sku": "รหัส SKU ที่ผูก",
+                "unit_cost": "ราคาทุน (บาท)",
+                "created_at": "วันที่บันทึก",
+            })
+            st.dataframe(
+                m_disp[["ชื่อสินค้าใน TikTok", "รหัส SKU ที่ผูก", "ราคาทุน (บาท)", "วันที่บันทึก"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            with st.expander("🗑️ ลบรายการจับคู่", expanded=False):
+                del_target = st.selectbox("เลือกชื่อสินค้าที่ต้องการลบการจับคู่:", options=mappings_df["product_name"].tolist())
+                if st.button("🗑️ ยืนยันลบการจับคู่นี้", type="secondary"):
+                    db.delete_sku_mapping(del_target)
+                    st.toast(f"ลบการจับคู่ '{del_target}' เรียบร้อยแล้ว")
+                    st.rerun()
+
+# ==================== TAB 4: EXCEL IMPORT / EXPORT ====================
 with tab_bulk:
     col_in, col_out = st.columns(2, gap="medium")
     with col_in:

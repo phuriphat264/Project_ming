@@ -13,6 +13,7 @@ from core import db
 from core.pipeline import ALL_PERIODS_KEY
 from core.ui import (
     baht,
+    get_current_shop,
     load_period_result,
     render_kpi_card,
     render_page_header,
@@ -22,9 +23,10 @@ from core.ui import (
 )
 
 user = require_login()
+cur_shop = get_current_shop()
 
 skus = db.get_skus()
-snapshots = db.list_snapshots()
+snapshots = db.list_snapshots(shop_code=cur_shop["code"])
 latest_period = snapshots.iloc[0]["month"] if not snapshots.empty else None
 active_period = st.session_state.get("period", latest_period or "-")
 
@@ -44,10 +46,10 @@ else:
 
 c1, c2, c3 = st.columns(3, gap="medium")
 with c1:
-    render_kpi_card("สินค้าในระบบทั้งหมด", f"{len(skus):,} รายการ", f"บันทึกข้อมูลแล้ว {total_periods:,} งวด", delta="SKU Master Active", delta_positive=True, icon="📦")
+    render_kpi_card("สินค้าในระบบทั้งหมด", f"{len(skus):,} รายการ", f"บันทึกแล้ว {total_periods:,} งวด ({cur_shop['name']})", delta="SKU Master Active", delta_positive=True, icon="📦")
 with c2:
     render_kpi_card(
-        f"รายได้รวมทุกงวด ({total_periods} งวด)" if total_periods > 0 else "รายได้รวมทุกงวด",
+        f"รายได้รวมทุกงวด ({cur_shop['name']})" if total_periods > 0 else f"รายได้รวม ({cur_shop['name']})",
         baht(all_sales) if (total_periods > 0 and user["role"] == "admin") else "-",
         f"งวดล่าสุด: {latest_period or '-'}",
         delta="ยอดขายรวม" if total_periods > 0 else None,
@@ -55,7 +57,7 @@ with c2:
     )
 with c3:
     render_kpi_card(
-        f"กำไรสุทธิรวมทุกงวด ({total_periods} งวด)" if total_periods > 0 else "กำไรสุทธิรวมทุกงวด",
+        f"กำไรสุทธิรวมทุกงวด ({cur_shop['name']})" if total_periods > 0 else f"กำไรสุทธิ ({cur_shop['name']})",
         baht(all_profit) if (total_periods > 0 and user["role"] == "admin") else "-",
         delta="กำไรสุทธิสะสม" if all_profit >= 0 else "ขาดทุนสะสม",
         delta_positive=all_profit >= 0,

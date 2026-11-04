@@ -264,8 +264,27 @@ def get_current_shop() -> dict:
 
 
 def set_current_shop(code: str) -> None:
-    """กำหนดรหัสร้านค้าที่กำลังเลือกใช้งานอยู่"""
+    """กำหนดรหัสร้านค้าที่กำลังเลือกใช้งานอยู่ และสลับข้อมูลงวดให้อัตโนมัติ (แยกข้อมูลตามร้านค้า)"""
+    old_code = st.session_state.get("active_shop_code")
     st.session_state["active_shop_code"] = code
+
+    if old_code != code:
+        # สลับข้อมูลงวดและผลลัพธ์ไปยังร้านค้าที่เลือกทันที
+        snaps = db.list_snapshots(shop_code=code)
+        if not snaps.empty:
+            target_p = snaps.iloc[0]["month"]
+            st.session_state["period"] = target_p
+            new_res = load_period_result(target_p, shop_code=code)
+            st.session_state["result"] = new_res
+        else:
+            # ร้านนี้ยังไม่มีงวดข้อมูล ให้ล้างผลลัพธ์ของร้านเดิมออกเพื่อไม่ให้ข้อมูลปนกัน!
+            for k in ("result", "period", "raw", "notes"):
+                st.session_state.pop(k, None)
+        # ล้างแคชไฟล์ Excel ที่อาจค้างมาจากร้านเดิม
+        st.session_state.pop("_cached_master_excel_bytes", None)
+        st.session_state.pop("_cached_master_excel_key", None)
+        st.session_state.pop("_cached_rep_xlsx", None)
+        st.session_state.pop("_cached_rep_key", None)
 
 
 def render_page_header(
@@ -529,8 +548,7 @@ def require_login(admin_only: bool = False) -> dict:
             def _on_sidebar_shop_change():
                 sel = st.session_state.get("sidebar_active_shop_dropdown")
                 if sel:
-                    st.session_state["active_shop_code"] = sel
-                    st.session_state["global_upload_shop_select"] = sel
+                    set_current_shop(sel)
 
             st.selectbox(
                 "🔄 สลับเลือกร้านค้า:",
@@ -589,13 +607,16 @@ def _distinct_saved_months(months: list[str]) -> list[str]:
     return non_merged + merged_only
 
 
-def load_period_result(period: str):
-    """โหลดข้อมูล PipelineResult ของงวดเดี่ยว หรือรวมทุกงวดทั้งหมด (ALL_PERIODS_KEY)"""
+def load_period_result(period: str, shop_code: str | None = None):
+    """โหลดข้อมูล PipelineResult ของงวดเดี่ยว หรือรวมทุกงวดทั้งหมด (ALL_PERIODS_KEY) แยกตามร้านค้า"""
     from core.pipeline import ALL_PERIODS_KEY, combine_pipeline_results, recalculate_with_skus
 
     sku_master = db.get_skus()
     if period == ALL_PERIODS_KEY:
-        snaps = db.list_snapshots()
+        if shop_code is None:
+            cur_s = get_current_shop()
+            shop_code = cur_s.get("code")
+        snaps = db.list_snapshots(shop_code=shop_code) if (shop_code and shop_code != "all") else db.list_snapshots()
         if snaps.empty:
             return None
         ordered_months = _distinct_saved_months(snaps["month"].tolist())
@@ -703,22 +724,29 @@ def build_saved_periods_comparison_df():
 
 
 def render_period_selector(container=None, key: str = "global_period_sel") -> str:
-    """กล่องเลือกสลับดู 'สรุปรวมทุกงวดทั้งหมด' หรือ 'แยกดูแต่ละเดือน / แต่ละช่องทาง' ใช้ร่วมกันทุกหน้า"""
+    """กล่องเลือกสลับดู 'สรุปรวมทุกงวด' หรือ 'แยกดูแต่ละเดือน' แยกตามร้านค้าที่เลือกอยู่"""
     from core.pipeline import ALL_PERIODS_KEY
 
     host = container if container is not None else st
-    snaps = db.list_snapshots()
+    cur_shop = get_current_shop()
+    shop_code = cur_shop.get("code", "matang")
+    shop_name = cur_shop.get("name", "มาตัง (Matang)")
+
     cur_period = st.session_state.get("period", "")
+
+    # กรองเฉพาะงวดของร้านค้าที่กำลังเลือกใช้งานอยู่
+    snaps = db.list_snapshots(shop_code=shop_code)
 
     if snaps.empty:
         if key in st.session_state:
             st.session_state.pop(key, None)
+        host.info(f"🏬 ร้าน **{shop_name}** ยังไม่มีข้อมูลงวดที่นำเข้าในระบบ")
         return cur_period
 
     saved_months = snaps["month"].tolist()
     order_map = dict(zip(snaps["month"], snaps["order_count"]))
 
-    # กำหนด options ตามจำนวนงวดจริงในฐานข้อมูล
+    # กำหนด options ตามจำนวนงวดจริงของร้านนี้
     if len(saved_months) >= 2:
         options = [ALL_PERIODS_KEY] + saved_months
     else:
@@ -728,44 +756,33 @@ def render_period_selector(container=None, key: str = "global_period_sel") -> st
     if key in st.session_state and st.session_state[key] not in options:
         st.session_state.pop(key, None)
 
-    # ถ้างวดปัจจุบันไม่อยู่ใน options ให้รีเซ็ตไปยังงวดที่ถูกต้องทันที
+    # ถ้างวดปัจจุบันไม่อยู่ใน options ของร้านนี้ ให้รีเซ็ตไปยังงวดแรกของร้านนี้ทันที
     if cur_period not in options:
         cur_period = options[0]
         st.session_state["period"] = cur_period
-        new_res = load_period_result(cur_period)
+        new_res = load_period_result(cur_period, shop_code=shop_code)
         if new_res is not None:
             db.set_app_state("active_period", cur_period)
             st.session_state["result"] = new_res
 
     idx = options.index(cur_period) if cur_period in options else 0
 
-    shops_map = {s["code"]: s["name"] for s in db.list_shops()}
-    shop_code_map = dict(zip(snaps["month"], snaps["shop_code"])) if "shop_code" in snaps.columns else {}
-
     def _fmt(opt: str) -> str:
         if opt == ALL_PERIODS_KEY:
-            return f"📊 สรุปรวมทุกงวดและทุกช่องทาง ({len(saved_months)} งวด)"
+            return f"📊 สรุปรวมทุกงวดของร้าน {shop_name} ({len(saved_months)} งวด)"
         cnt = order_map.get(opt)
         cnt_str = f"({int(cnt):,} ออเดอร์)" if cnt is not None else "(ยังไม่บันทึก)"
-        if "(รวม)" in opt or "(รวมทุกงวด)" in opt:
-            return f"📈 [รวมทุกช่องทาง] {opt} {cnt_str}"
-        s_c = shop_code_map.get(opt, "")
-        s_name = shops_map.get(s_c, "")
-        if s_name:
-            return f"🏬 [{s_name}] {opt} {cnt_str}"
-        elif "(" in opt and ")" in opt:
-            return f"🏬 {opt} {cnt_str}"
-        return f"🏬 งวด {opt} {cnt_str}"
+        return f"🏬 {opt} {cnt_str}"
 
     selected = host.selectbox(
-        "📅 เลือกดูข้อมูล (แยกตามเดือน / ช่องทาง หรือ สรุปรวมทุกงวดทั้งหมด):",
+        f"📅 เลือกดูข้อมูลงวดของร้าน [{shop_name}]:",
         options,
         index=idx,
         format_func=_fmt,
         key=key,
     )
     if selected != cur_period:
-        new_res = load_period_result(selected)
+        new_res = load_period_result(selected, shop_code=shop_code)
         if new_res is not None:
             db.set_app_state("active_period", selected)
             st.session_state.update(result=new_res, period=selected, notes=[])
@@ -833,25 +850,34 @@ def require_result():
 
     res = st.session_state.get("result")
     cur_period = st.session_state.get("period")
+    cur_shop = get_current_shop()
+    shop_code = cur_shop.get("code", "matang")
+    shop_name = cur_shop.get("name", "มาตัง (Matang)")
 
-    snaps = db.list_snapshots()
+    snaps = db.list_snapshots(shop_code=shop_code)
     saved_months = snaps["month"].tolist() if not snaps.empty else []
 
-    # 1. กรณีไม่มี snapshot ในฐานข้อมูลเลย
+    # 1. กรณีร้านที่เลือกยังไม่มี snapshot ในฐานข้อมูลเลย
     if snaps.empty:
-        # ถ้ามีผลการคำนวณสดในหน่วยความจำ (เช่น อัปโหลดใหม่สดๆ ก่อนบันทึก snapshot) ให้ใช้งานต่อได้
-        if res is not None:
+        # ถ้ามีผลการคำนวณสดในหน่วยความจำที่ตรงกับร้านนี้ ให้ใช้งานต่อได้
+        if res is not None and getattr(res, "source", None) == shop_code:
             res = recalculate_with_skus(res, db.get_skus())
             st.session_state["result"] = res
             return res
         for k in ("result", "period", "raw", "notes", "_cached_master_excel_bytes", "_cached_master_excel_key"):
             st.session_state.pop(k, None)
         db.set_app_state("active_period", "")
-        st.info("💡 กรุณาไปที่หน้า **📤 นำเข้าข้อมูล** เพื่ออัปโหลดไฟล์ Excel ก่อน")
-        st.page_link("pages/2_📤_นำเข้าข้อมูล.py", label="ไปหน้านำเข้าข้อมูล", icon="📤")
+        st.info(f"💡 ร้าน **{shop_name}** ยังไม่มีข้อมูลงวดที่นำเข้าในระบบ กรุณาไปที่หน้า **📤 นำเข้าข้อมูล** เพื่ออัปโหลดไฟล์ของร้านนี้ก่อน")
+        st.page_link("pages/2_📤_นำเข้าข้อมูล.py", label=f"ไปหน้านำเข้าข้อมูลสำหรับ {shop_name}", icon="📤")
         st.stop()
 
-    # 2. ตรวจสอบว่างวดปัจจุบันยังถูกต้องและมีอยู่จริงในฐานข้อมูลหรือไม่ (ป้องกันค้างงวดที่เพิ่งถูกลบ)
+    # 2. ตรวจสอบว่างวดปัจจุบันยังถูกต้องและเป็นของร้านนี้หรือไม่
+    is_foreign_period = False
+    if cur_period and cur_period != ALL_PERIODS_KEY:
+        ld = db.load_snapshot(cur_period)
+        if ld and ld.get("shop_code") != shop_code:
+            is_foreign_period = True
+
     is_stale_period = (
         cur_period is not None
         and cur_period != ALL_PERIODS_KEY
@@ -862,7 +888,7 @@ def require_result():
         and len(saved_months) < 2
     )
 
-    if res is None or is_stale_period or is_invalid_all:
+    if res is None or is_foreign_period or is_stale_period or is_invalid_all:
         saved_p = db.get_app_state("active_period")
         if saved_p == ALL_PERIODS_KEY and len(saved_months) >= 2:
             target_period = ALL_PERIODS_KEY
@@ -873,7 +899,7 @@ def require_result():
         else:
             target_period = saved_months[0]
 
-        loaded_res = load_period_result(target_period)
+        loaded_res = load_period_result(target_period, shop_code=shop_code)
         if loaded_res is not None:
             db.set_app_state("active_period", target_period)
             st.session_state.update(result=loaded_res, period=target_period, notes=[])
@@ -881,13 +907,13 @@ def require_result():
         else:
             for k in ("result", "period", "raw", "notes"):
                 st.session_state.pop(k, None)
-            st.info("💡 กรุณาไปที่หน้า **📤 นำเข้าข้อมูล** เพื่ออัปโหลดไฟล์ Excel ก่อน")
+            st.info(f"💡 กรุณาไปที่หน้า **📤 นำเข้าข้อมูล** เพื่ออัปโหลดไฟล์สำหรับร้าน {shop_name} ก่อน")
             st.page_link("pages/2_📤_นำเข้าข้อมูล.py", label="ไปหน้านำเข้าข้อมูล", icon="📤")
             st.stop()
 
-    # 3. ถ้านั่งดูสรุปรวมทุกงวดทั้งหมด ให้โหลดรวมใหม่อัตโนมัติเผื่อเพิ่งอัปเดต SKU หรือเพิ่ม/ลบงวด
+    # 3. ถ้านั่งดูสรุปรวมทุกงวดทั้งหมด ให้โหลดรวมใหม่อัตโนมัติสำหรับร้านนี้
     if cur_period == ALL_PERIODS_KEY:
-        refreshed = load_period_result(ALL_PERIODS_KEY)
+        refreshed = load_period_result(ALL_PERIODS_KEY, shop_code=shop_code)
         if refreshed is not None:
             st.session_state["result"] = refreshed
             return refreshed

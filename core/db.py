@@ -101,6 +101,11 @@ def init_db(db_path: Path | None = None) -> None:
                 is_active INTEGER DEFAULT 1,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS product_sku_mappings (
+                product_name TEXT PRIMARY KEY,
+                sku TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             """
         )
         # รองรับฐานข้อมูลเดิมที่ยังไม่มีคอลัมน์ list_price (ราคาตั้งขาย)
@@ -667,14 +672,76 @@ def save_snapshot(
         )
 
 
-def list_snapshots(db_path: Path | None = None) -> pd.DataFrame:
+def list_snapshots(shop_code: str | None = None, db_path: Path | None = None) -> pd.DataFrame:
     init_db(db_path)
     with connect(db_path) as c:
+        if shop_code and shop_code != "all":
+            return pd.read_sql(
+                """
+                SELECT month, created_at, source, order_count, net_sales, net_profit, shop_code
+                FROM monthly_snapshots
+                WHERE shop_code = ?
+                ORDER BY month DESC
+                """,
+                c,
+                params=(shop_code,),
+            )
         return pd.read_sql(
             """
             SELECT month, created_at, source, order_count, net_sales, net_profit, shop_code
             FROM monthly_snapshots
             ORDER BY month DESC
+            """,
+            c,
+        )
+
+
+def get_sku_mappings(db_path: Path | None = None) -> dict[str, str]:
+    """ดึงตารางจับคู่ชื่อสินค้ากับรหัส SKU: {product_name: sku}"""
+    init_db(db_path)
+    with connect(db_path) as c:
+        rows = c.execute("SELECT product_name, sku FROM product_sku_mappings").fetchall()
+        return {r[0].strip(): r[1].strip() for r in rows if r[0] and r[1]}
+
+
+def upsert_sku_mapping(product_name: str, sku: str, db_path: Path | None = None) -> None:
+    """บันทึกการจับคู่ชื่อสินค้าจาก TikTok เข้ากับรหัส SKU"""
+    p_name = str(product_name).strip()
+    s_code = str(sku).strip()
+    if not p_name or not s_code or s_code in ("(ไม่ระบุ SKU)", "nan", "None"):
+        return
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    init_db(db_path)
+    with connect(db_path) as c:
+        c.execute(
+            """
+            INSERT INTO product_sku_mappings (product_name, sku, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(product_name) DO UPDATE SET
+                sku = excluded.sku,
+                created_at = excluded.created_at
+            """,
+            (p_name, s_code, now_str),
+        )
+
+
+def delete_sku_mapping(product_name: str, db_path: Path | None = None) -> None:
+    """ลบการจับคู่ชื่อสินค้ากับรหัส SKU"""
+    init_db(db_path)
+    with connect(db_path) as c:
+        c.execute("DELETE FROM product_sku_mappings WHERE product_name = ?", (str(product_name).strip(),))
+
+
+def list_sku_mappings(db_path: Path | None = None) -> pd.DataFrame:
+    """แสดงรายการจับคู่ชื่อสินค้ากับรหัส SKU ทั้งหมดในระบบ"""
+    init_db(db_path)
+    with connect(db_path) as c:
+        return pd.read_sql(
+            """
+            SELECT m.product_name, m.sku, m.created_at, s.name as sku_name, s.unit_cost
+            FROM product_sku_mappings m
+            LEFT JOIN sku s ON m.sku = s.sku
+            ORDER BY m.product_name ASC
             """,
             c,
         )
