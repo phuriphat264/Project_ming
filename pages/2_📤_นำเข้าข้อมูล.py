@@ -56,7 +56,6 @@ from core.ui import (
     render_page_header,
     render_section_header,
     require_login,
-    set_current_shop,
     summarize_for_period,
 )
 
@@ -392,7 +391,8 @@ shop_codes = [s["code"] for s in shops_list]
 shop_map = {s["code"]: s for s in shops_list}
 
 active_shop = get_current_shop()
-cur_idx = shop_codes.index(active_shop["code"]) if active_shop["code"] in shop_codes else 0
+if "global_upload_shop_select" not in st.session_state or st.session_state["global_upload_shop_select"] not in shop_codes:
+    st.session_state["global_upload_shop_select"] = active_shop["code"]
 
 col_s1, col_s2 = st.columns([3, 1.2], vertical_alignment="bottom")
 with col_s1:
@@ -402,16 +402,20 @@ with col_s1:
         star = " ★ (ช่องทางหลัก)" if item.get("is_default") else ""
         return f"🏬 {item.get('name', c)}{handle}{star}"
 
+    def _on_upload_shop_change():
+        sel_c = st.session_state.get("global_upload_shop_select")
+        if sel_c:
+            st.session_state["active_shop_code"] = sel_c
+            st.session_state["sidebar_active_shop_dropdown"] = sel_c
+
     cur_selected_shop_code = st.selectbox(
         "🏬 เลือกร้านค้า / ช่องทาง TikTok Shop ของชุดข้อมูลนี้:",
         options=shop_codes,
-        index=cur_idx,
         format_func=_shop_lbl,
         key="global_upload_shop_select",
+        on_change=_on_upload_shop_change,
         help="เลือกร้านค้าเพื่อแยกเก็บผลการวิเคราะห์และส่งออกไฟล์ต้นทุนตามชื่อร้าน",
     )
-    if cur_selected_shop_code != active_shop["code"]:
-        set_current_shop(cur_selected_shop_code)
     active_shop_info = shop_map.get(cur_selected_shop_code, shops_list[0])
 
 with col_s2:

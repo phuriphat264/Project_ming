@@ -266,7 +266,6 @@ def get_current_shop() -> dict:
 def set_current_shop(code: str) -> None:
     """กำหนดรหัสร้านค้าที่กำลังเลือกใช้งานอยู่"""
     st.session_state["active_shop_code"] = code
-    st.session_state["global_upload_shop_select"] = code
 
 
 def render_page_header(
@@ -524,18 +523,23 @@ def require_login(admin_only: bool = False) -> dict:
         )
 
         if len(all_act_shops) > 1:
-            cur_idx = s_codes.index(c_shop["code"]) if c_shop["code"] in s_codes else 0
-            sel_side_shop = st.selectbox(
+            if "sidebar_active_shop_dropdown" not in st.session_state or st.session_state["sidebar_active_shop_dropdown"] not in s_codes:
+                st.session_state["sidebar_active_shop_dropdown"] = c_shop["code"]
+
+            def _on_sidebar_shop_change():
+                sel = st.session_state.get("sidebar_active_shop_dropdown")
+                if sel:
+                    st.session_state["active_shop_code"] = sel
+                    st.session_state["global_upload_shop_select"] = sel
+
+            st.selectbox(
                 "🔄 สลับเลือกร้านค้า:",
                 options=s_codes,
-                index=cur_idx,
                 format_func=_fmt_side_shop,
                 key="sidebar_active_shop_dropdown",
+                on_change=_on_sidebar_shop_change,
                 help="เลือกเพื่อสลับร้านค้าที่ต้องการดูหรือนำเข้าข้อมูล",
             )
-            if sel_side_shop != c_shop["code"]:
-                set_current_shop(sel_side_shop)
-                st.rerun()
 
         if st.session_state.get("result") is not None:
             if st.button("🔄 ล้างข้อมูลที่เปิดอยู่", width="stretch", type="secondary"):
