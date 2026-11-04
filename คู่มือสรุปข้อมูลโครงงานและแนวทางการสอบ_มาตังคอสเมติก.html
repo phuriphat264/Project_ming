@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>คู่มือสรุปข้อมูลโครงงานและแนวทางการสอบโครงงานสหกิจศึกษา - มาตัง คอสเมติก</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap');
+  body {
+    font-family: 'Sarabun', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #1e293b;
+    line-height: 1.6;
+    background-color: #f8fafc;
+    margin: 0;
+    padding: 24px;
+  }
+  .container {
+    max-width: 1000px;
+    margin: 0 auto;
+    background: #ffffff;
+    padding: 40px;
+    border-radius: 16px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  }
+  .header-banner {
+    background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
+    color: white;
+    padding: 32px;
+    border-radius: 12px;
+    margin-bottom: 30px;
+  }
+  .header-banner h1 { margin: 0 0 10px 0; font-size: 24pt; font-weight: 700; line-height: 1.3; }
+  .header-banner .subtitle { font-size: 14pt; color: #93c5fd; margin-bottom: 12px; }
+  .header-banner .meta { font-size: 11pt; color: #cbd5e1; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 12px; }
+  h2 { color: #0f172a; font-size: 16pt; font-weight: 700; border-left: 6px solid #2563eb; padding-left: 12px; margin-top: 36px; margin-bottom: 16px; }
+  h3 { color: #1e40af; font-size: 13pt; font-weight: 600; margin-top: 20px; margin-bottom: 8px; }
+  p, li { font-size: 11pt; color: #334155; }
+  .box { background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .box-blue { background: #eff6ff; border-color: #93c5fd; border-left: 5px solid #3b82f6; }
+  .box-green { background: #f0fdf4; border-color: #86efac; border-left: 5px solid #22c55e; }
+  .box-amber { background: #fffbeb; border-color: #fde68a; border-left: 5px solid #f59e0b; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 10.5pt; }
+  th, td { border: 1px solid #cbd5e1; padding: 10px 12px; text-align: left; }
+  th { background: #e2e8f0; font-weight: 700; color: #0f172a; }
+  code { background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 10pt; color: #0f172a; }
+  .formula { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 14px; margin: 8px 0; font-family: monospace; font-size: 10.5pt; color: #0f172a; font-weight: 600; }
+  .qa-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(0,0,0,0.03); }
+  .qa-q { font-weight: 700; color: #1e3a8a; font-size: 11.5pt; margin-bottom: 6px; }
+  .qa-a { color: #334155; font-size: 11pt; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header-banner">
+    <h1>📘 สรุปข้อมูลโครงงานและคู่มือเตรียมสอบสหกิจศึกษา</h1>
+    <div class="subtitle">การพัฒนาระบบคำนวณต้นทุนและกำไรอัตโนมัติจากไฟล์ข้อมูลที่ผ่านการทำความสะอาดแล้ว กรณีศึกษา บริษัท มาตัง คอสเมติก จำกัด</div>
+    <div class="meta">
+      <div><strong>ผู้จัดทำ:</strong> นายวรณ วิโคตร (รหัสนิสิต 67310177) | <strong>อาจารย์ที่ปรึกษา:</strong> ดร. ภาณุพล สมัยมงคล</div>
+      <div><strong>สาขาวิชา:</strong> เทคโนโลยีสารสนเทศและวิทยาการข้อมูล คณะวิทยาศาสตร์และศิลปศาสตร์ มหาวิทยาลัยบูรพา วิทยาเขตจันทบุรี</div>
+    </div>
+  </div>
+
+  <h2>1. สรุปภาพรวมและที่มาของปัญหา (Executive Summary)</h2>
+  <div class="box box-blue">
+    <p><strong>ปัญหาเดิมของสถานประกอบการ:</strong> บริษัท มาตัง คอสเมติก จำกัด มีคำสั่งซื้อผ่าน TikTok Shop เฉลี่ย 30,000–50,000 ออเดอร์/เดือน ฝ่ายบัญชีต้องใช้สูตร VLOOKUP และ SUMIFS เชื่อมโยงไฟล์รายงาน Excel หลายชุดด้วยตนเอง ซึ่งทำให้:</p>
+    <ul>
+      <li><strong>เสียเวลาปิดงบนาน 3–5 วันทำการ</strong> ต่อเดือน</li>
+      <li><strong>ปัญหาคิดต้นทุนซ้ำซ้อน (Double-Counting COGS):</strong> ออเดอร์ที่มีแถวคืนเงินค่าจัดส่งย้อนหลัง (6–13 บาท) จะมี 2 แถวใน Settlement ทำให้สูตร Excel เดิมคิดต้นทุนสินค้าเบิ้ล 2 รอบ (ในเดือน ก.ย. 69 ต้นทุนบวมเกินจริงไปถึง 28,240 บาท)</li>
+      <li><strong>ปัญหาออเดอร์ข้ามงวด (Cross-Month Gap):</strong> เงินโอนเข้าเดือนนี้ แต่ออเดอร์สร้างเดือนก่อน ทำให้หารายการสินค้าไม่เจอ ต้องไปก๊อปปี้ไฟล์เก่ามารวมด้วยมือ</li>
+      <li><strong>ขาดการวิเคราะห์เชิงลึก:</strong> ตรวจไม่พบออเดอร์ที่ขายขาดทุน และจำลองผลกระทบการปรับราคา/ค่าแอดไม่ได้</li>
+    </ul>
+    <p><strong>ผลลัพธ์ของระบบใหม่:</strong> ประมวลผล 32,714 รายการเสร็จใน <strong>11.4 วินาที</strong> (ลดเวลาลงกว่า 99%) พร้อมระบบ COGS Deduplication และ Order Repository ขจัดข้อผิดพลาด 100%</p>
+  </div>
+
+  <h2>2. สถาปัตยกรรมและโครงสร้างสูตรการคำนวณ (Calculation Engine)</h2>
+  <h3>2.1 ระดับรายการสินค้า (Order Line Item)</h3>
+  <div class="formula">
+    net_qty = max(0, Quantity - Sku_Quantity_of_Return) [ถ้ายกเลิกคำสั่งซื้อ = 0]<br>
+    ราคาต่อหน่วย (Col I) = VLOOKUP(Seller SKU, SKU Master, unit_cost)<br>
+    มูลค่าต้นทุนสุทธิ (Col J) = ราคาต่อหน่วย (Col I) × net_qty
+  </div>
+
+  <h3>2.2 ระดับคำสั่งซื้อ (Order Settlement Level)</h3>
+  <div class="formula">
+    ยอดการชำระเงินทั้งหมด (Col F) = ยอดขายสุทธิ - ค่าธรรมเนียมแพลตฟอร์มทั้งหมด + จำนวนการปรับยอด<br>
+    ต้นทุนรวมสินค้า (Col G) = SUM(Order!Col J) [คิดเฉพาะแถวธุรกรรมหลัก แถวคืนค่าส่งเซ็ตเป็น 0]<br>
+    กำไรรายออเดอร์ (Col H) = ยอดชำระเงินทั้งหมด (Col F) - ต้นทุนรวมสินค้า (Col G)
+  </div>
+
+  <h3>2.3 งบกำไรขาดทุนของบริษัท (Company P&L)</h3>
+  <div class="formula">
+    Rough Profit = SUM(Col H) - ค่าโฆษณาภายนอก<br>
+    Sales Commission = max(0, Rough Profit × % ค่าคอมฯ)<br>
+    Fixed Costs = ค่าแรง + ค่าน้ำ + ค่าไฟ + ค่าเช่า + ค่ากล่องพัสดุ<br>
+    Net Profit = Rough Profit - Sales Commission - Fixed Costs<br>
+    จุดคุ้มทุน (BEP) = Fixed Costs ÷ Contribution Margin Ratio
+  </div>
+
+  <h2>3. สรุปผลการทดสอบระบบ (Testing & Validation Results)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>มิติการทดสอบ</th>
+        <th>ผลการทดสอบด้วยมือเดิม (Excel)</th>
+        <th>ผลลัพธ์จากระบบอัตโนมัติ (Python)</th>
+        <th>ผลสัมฤทธิ์ที่ได้</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>ความแม่นยำของตัวเลขทางการเงิน</strong></td>
+        <td>ต้นทุนบวม 28,240 บาท จากการคิดต้นทุนซ้ำในแถวคืนค่าส่ง</td>
+        <td>คำนวณถูกต้องตามหลักการบัญชีจริง 100%</td>
+        <td>บริษัทรับรู้กำไรสุทธิแท้จริงเพิ่มขึ้น 28,240 บาท</td>
+      </tr>
+      <tr>
+        <td><strong>ระยะเวลาในการประมวลผล (32,714 ออเดอร์)</strong></td>
+        <td>ใช้เวลา 3 ถึง 5 วันทำการ (เครื่องคอมฯ ค้างบ่อย)</td>
+        <td>ประมวลผลเสร็จสิ้นใน 11.4 วินาที</td>
+        <td>ลดระยะเวลาการทำงานลง 99.9%</td>
+      </tr>
+      <tr>
+        <td><strong>การจัดการคำสั่งซื้อข้ามงวด</strong></td>
+        <td>ต้องเปิดไฟล์เดือนก่อนหน้ามาตัดยอดด้วยมือ</td>
+        <td>ดึงจากคลัง Order Repository อัตโนมัติ</td>
+        <td>นำเข้าเฉพาะไฟล์เดือนใหม่ไฟล์เดียวได้ทันที</td>
+      </tr>
+      <tr>
+        <td><strong>การประเมินความพึงพอใจ</strong></td>
+        <td>-</td>
+        <td>คะแนนเฉลี่ย 4.90 เต็ม 5.00</td>
+        <td>อยู่ในเกณฑ์ 'มากที่สุด' จากผู้ใช้งานจริง</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>4. แนวทางการตอบคำถามกรรมการสอบโครงงาน (Defense Q&A)</h2>
+  
+  <div class="qa-card">
+    <div class="qa-q">Q1: จุดเด่นและนวัตกรรมหลักของโปรเจกต์นี้คืออะไร เมื่อเทียบกับการใช้โปรแกรม Excel ทั่วไป?</div>
+    <div class="qa-a"><strong>คำตอบ:</strong> จุดเด่นหลักคือการเปลี่ยนจากการทำงานแบบ Manual ที่ต้องพึ่งพาแรงงานคนและสูตรสเปรดชีตที่เสี่ยงต่อความผิดพลาด มาเป็น <strong>End-to-End Data Pipeline</strong> ที่ทำงานอัตโนมัติ โดยมี 3 นวัตกรรมสำคัญ:
+      1) อัลกอริทึม <strong>COGS Deduplication</strong> ที่ตรวจจับออเดอร์หลายแถวใน TikTok เพื่อป้องกันการคิดต้นทุนสินค้าซ้ำ
+      2) สถาปัตยกรรม <strong>Order Repository</strong> ที่ใช้ไฟล์ Parquet บันทึกคำสั่งซื้อสะสมข้ามงวด
+      3) <strong>Financial Simulation & Anomaly Detection</strong> ที่สามารถจำลองราคาแบบ What-If และตรวจจับออเดอร์ขายขาดทุนได้ทันที</div>
+  </div>
+
+  <div class="qa-card">
+    <div class="qa-q">Q2: ทำไมจึงเลือกใช้ Parquet ร่วมกับ SQLite แทนที่จะใช้ MySQL หรือฐานข้อมูลขนาดใหญ่?</div>
+    <div class="qa-a"><strong>คำตอบ:</strong> เนื่องจากระบบถูกออกแบบให้ติดตั้งใช้งานภายในเครื่องของฝ่ายบัญชีและโรงงาน (Lightweight & Standalone) การใช้ SQLite ช่วยให้ไม่ต้องติดตั้ง Database Server ภายนอก ส่วนการใช้ Parquet เก็บประวัติคำสั่งซื้อสะสม เพราะ Parquet เป็น Columnar Storage ที่มีอัตราการบีบอัดสูงมาก ประหยัดเนื้อที่ดิสก์ และเวลาอ่านคอลัมน์เพื่อคำนวณจะเร็วกว่าไฟล์ Excel ทั่วไปถึง 10–20 เท่า ทำให้ประมวลผล 3 หมื่นแถวได้ใน 11 วินาที</div>
+  </div>
+
+  <div class="qa-card">
+    <div class="qa-q">Q3: หาก TikTok มีการเปลี่ยนรูปแบบหัวตารางหรือมีคอลัมน์ใหม่ ระบบจะทำงานได้หรือไม่?</div>
+    <div class="qa-a"><strong>คำตอบ:</strong> ระบบถูกออกแบบให้รองรับผ่านโมดูล <code>core/loader.py</code> ซึ่งมีระบบ Column Mapping แบบยืดหยุ่น รองรับทั้งชื่อหัวตารางภาษาไทยและภาษาอังกฤษ (Global Format) และตรวจสอบคอลัมน์สำคัญ (Required Keys) หากมีคอลัมน์ใหม่เพิ่มเข้ามา ระบบจะไม่พัง และหากมีรหัสสินค้าใหม่ที่ไม่มีราคาทุน ระบบจะมีระบบ <strong>Missing SKU Warning</strong> แจ้งเตือนฝ่ายบัญชีให้ไปกรอกราคาทุนทันที</div>
+  </div>
+
+</div>
+</body>
+</html>

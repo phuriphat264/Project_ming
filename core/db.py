@@ -224,14 +224,36 @@ def upsert_shop(
             """,
             (code, name, tiktok_handle.strip(), 1 if is_default else 0, 1 if is_active else 0, now_str),
         )
+        # หากไม่มีร้านใดถูกตั้งเป็นร้านหลัก (is_default == 1) เลย ให้ตั้งร้านอื่นเป็นร้านหลักอัตโนมัติ
+        has_default = c.execute("SELECT COUNT(*) FROM shops WHERE is_default = 1").fetchone()[0]
+        if not has_default:
+            other_shop = c.execute("SELECT code FROM shops WHERE code != ? AND is_active = 1 LIMIT 1", (code,)).fetchone()
+            if not other_shop:
+                other_shop = c.execute("SELECT code FROM shops WHERE code != ? LIMIT 1", (code,)).fetchone()
+            if other_shop:
+                c.execute("UPDATE shops SET is_default = 1 WHERE code = ?", (other_shop[0],))
+            else:
+                c.execute("UPDATE shops SET is_default = 1 WHERE code = ?", (code,))
 
 
 def delete_shop(code: str, db_path: Path | None = None) -> bool:
     code = code.strip().lower()
-    if code in ("matang",):
-        return False  # Protect default main shop
     with connect(db_path) as c:
+        shops = c.execute("SELECT code, is_default FROM shops").fetchall()
+        if len(shops) <= 1:
+            return False  # ไม่สามารถลบได้หากเหลือร้านเดียวในระบบ
+        target = next((s for s in shops if s[0] == code), None)
+        if not target:
+            return False
+        if target[1] == 1:
+            return False  # ไม่อนุญาตให้ลบร้านที่เป็นร้านหลัก ต้องเปลี่ยนร้านอื่นเป็นร้านหลักก่อน
         c.execute("DELETE FROM shops WHERE code = ?", (code,))
+        # ตรวจสอบว่ายังมีร้านหลักหรือไม่ ถ้าไม่มีให้ตั้งร้านแรกที่เหลือเป็นร้านหลัก
+        has_default = c.execute("SELECT COUNT(*) FROM shops WHERE is_default = 1").fetchone()[0]
+        if not has_default:
+            first_shop = c.execute("SELECT code FROM shops ORDER BY is_active DESC, code ASC LIMIT 1").fetchone()
+            if first_shop:
+                c.execute("UPDATE shops SET is_default = 1 WHERE code = ?", (first_shop[0],))
     return True
 
 
@@ -434,7 +456,8 @@ def _normalize_sku_frame(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = 0.0 if col in num_cols else ""
     df["sku"] = df["sku"].astype(str).str.strip()
-    df = df[(df["sku"] != "") & (df["sku"].str.lower() != "nan")]
+    # กรองค่าว่าง, nan, และรหัสที่เป็นตัวเลขล้วน 10 หลักขึ้นไป (ป้องกัน SKU ID หลุดเข้ามาใน master)
+    df = df[(df["sku"] != "") & (df["sku"].str.lower() != "nan") & (~df["sku"].str.fullmatch(r"\d{10,}"))]
     for col in num_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     for col in ("name", "category"):

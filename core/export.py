@@ -297,12 +297,15 @@ def build_company_cost_master_excel(
         else:
             p_idx = min(7, len(o_df.columns) - 1)
 
-        sku_col = "Seller SKU" if "Seller SKU" in o_df.columns else "SKU ID"
+        sku_col = "Seller SKU" if "Seller SKU" in o_df.columns else None
         qty_col = "Quantity" if "Quantity" in o_df.columns else None
 
         sku_cost_map = dict(zip(sku_master["sku"].astype(str).str.strip(), sku_master["unit_cost"]))
-        seller_skus = o_df[sku_col].astype(str).str.strip() if sku_col in o_df.columns else pd.Series(0.0, index=o_df.index)
-        unit_costs = pd.to_numeric(seller_skus.map(sku_cost_map), errors="coerce").fillna(0.0)
+        if sku_col and sku_col in o_df.columns:
+            seller_skus = o_df[sku_col].astype(str).str.strip()
+            unit_costs = pd.to_numeric(seller_skus.map(sku_cost_map), errors="coerce").fillna(0.0)
+        else:
+            unit_costs = pd.Series(0.0, index=o_df.index)
 
         if qty_col and qty_col in o_df.columns:
             quantities = pd.to_numeric(o_df[qty_col], errors="coerce").fillna(0.0)

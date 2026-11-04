@@ -246,26 +246,70 @@ def init_page(title: str, icon: str = "📊") -> None:
         st.session_state["_reset_v"] = 7
 
 
+def get_current_shop() -> dict:
+    """ดึงข้อมูลร้านค้าที่ผู้ใช้กำลังเลือกใช้งานอยู่ในระบบ (Session) หรือค่าเริ่มต้น"""
+    shops = db.list_shops(active_only=True)
+    if not shops:
+        return {"code": "matang", "name": "มาตัง (Matang)", "tiktok_handle": "@matang_official", "is_default": 1}
+
+    cur_code = st.session_state.get("active_shop_code")
+    if cur_code:
+        found = next((s for s in shops if s["code"] == cur_code), None)
+        if found:
+            return found
+
+    def_shop = next((s for s in shops if s.get("is_default")), shops[0])
+    st.session_state["active_shop_code"] = def_shop["code"]
+    return def_shop
+
+
+def set_current_shop(code: str) -> None:
+    """กำหนดรหัสร้านค้าที่กำลังเลือกใช้งานอยู่"""
+    st.session_state["active_shop_code"] = code
+    st.session_state["global_upload_shop_select"] = code
+
+
 def render_page_header(
     title: str,
     subtitle: str = "",
     badge_text: str = "",
     badge_color: str = "slate",
     period: str | None = None,
+    show_shop: bool = True,
+    shop: dict | None = None,
 ) -> None:
-    """หัวข้อหน้าจอขนาดใหญ่ สไตล์ Modern Executive Banner"""
-    period_html = ""
+    """หัวข้อหน้าจอขนาดใหญ่ สไตล์ Modern Executive Banner พร้อมแสดงร้านค้าและงวดบัญชีที่เลือก"""
+    badges_html = []
+
+    if show_shop:
+        c_shop = shop or get_current_shop()
+        s_name = c_shop.get("name", "มาตัง (Matang)")
+        s_handle = f" {c_shop.get('tiktok_handle')}" if c_shop.get("tiktok_handle") else ""
+        s_badge = "★ ร้านหลัก" if c_shop.get("is_default") else "ร้านย่อย"
+        shop_html = (
+            f'<div style="background:linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);border:1px solid #c7d2fe;'
+            f'border-radius:14px;padding:9px 18px;text-align:right;box-shadow:0 2px 10px rgba(99, 102, 241, 0.12);">'
+            f'<div style="font-size:0.80rem;font-weight:700;color:#4338ca;display:flex;align-items:center;justify-content:flex-end;gap:6px;">'
+            f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#6366f1;box-shadow:0 0 6px #6366f1;"></span>'
+            f'🏬 ร้านค้าที่เลือก ({s_badge})</div>'
+            f'<b style="font-size:1.20rem;font-weight:800;color:#1e1b4b;letter-spacing:-0.01em;">{s_name}{s_handle}</b>'
+            f'</div>'
+        )
+        badges_html.append(shop_html)
+
     if period:
         period_html = (
             f'<div style="background:linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%);border:1px solid #a7f3d0;'
-            f'border-radius:14px;padding:10px 20px;text-align:right;box-shadow:0 2px 10px rgba(16, 185, 129, 0.12);">'
-            f'<div style="font-size:0.85rem;font-weight:600;color:#047857;display:flex;align-items:center;justify-content:flex-end;gap:6px;">'
+            f'border-radius:14px;padding:9px 18px;text-align:right;box-shadow:0 2px 10px rgba(16, 185, 129, 0.12);">'
+            f'<div style="font-size:0.80rem;font-weight:700;color:#047857;display:flex;align-items:center;justify-content:flex-end;gap:6px;">'
             f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#10b981;box-shadow:0 0 6px #10b981;"></span>'
-            f'งวดบัญชีที่เลือก</div>'
-            f'<b style="font-size:1.35rem;font-weight:800;color:#064e3b;letter-spacing:-0.01em;">{period}</b>'
-            f"</div>"
+            f'📅 งวดบัญชีที่เลือก</div>'
+            f'<b style="font-size:1.20rem;font-weight:800;color:#064e3b;letter-spacing:-0.01em;">{period}</b>'
+            f'</div>'
         )
+        badges_html.append(period_html)
 
+    right_col = f'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">{"".join(badges_html)}</div>' if badges_html else ""
     sub_html = f'<div style="font-size:1.02rem;color:#64748b;margin-top:6px;font-weight:400;">{subtitle}</div>' if subtitle else ""
 
     html = (
@@ -276,7 +320,7 @@ def render_page_header(
         f'<div style="font-size:1.95rem;font-weight:800;color:#0f172a;line-height:1.25;letter-spacing:-0.02em;">{title}</div>'
         f"{sub_html}"
         f"</div>"
-        f"{period_html}"
+        f"{right_col}"
         f"</div>"
     )
     st.markdown(html, unsafe_allow_html=True)
@@ -433,12 +477,65 @@ def require_login(admin_only: bool = False) -> dict:
     with st.sidebar:
         role_label = "ผู้บริหาร (Admin)" if user["role"] == "admin" else "พนักงาน (Staff)"
         st.markdown(
-            f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 16px;margin-bottom:12px;">'
+            f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 16px;margin-bottom:10px;">'
             f'<div style="font-weight:700;font-size:1.08rem;color:#0f172a;">👤 {user["display_name"]}</div>'
             f'<div style="font-size:0.92rem;color:#475569;margin-top:2px;">{role_label}</div>'
             f"</div>",
             unsafe_allow_html=True,
         )
+
+        # การ์ดแสดงร้านค้าที่กำลังเลือกใช้งานอยู่
+        c_shop = get_current_shop()
+        all_act_shops = db.list_shops(active_only=True)
+        s_codes = [s["code"] for s in all_act_shops]
+        s_map = {s["code"]: s for s in all_act_shops}
+
+        def _fmt_side_shop(c: str) -> str:
+            item = s_map.get(c, {})
+            star = " ★" if item.get("is_default") else ""
+            return f"🏬 {item.get('name', c)}{star}"
+
+        b_star = "★ ร้านหลัก" if c_shop.get("is_default") else "ร้านย่อย"
+        h_txt = f" ({c_shop.get('tiktok_handle')})" if c_shop.get("tiktok_handle") else ""
+
+        st.markdown(
+            f"""
+            <div style="background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
+                        border: 1px solid #4338ca; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px;
+                        box-shadow: 0 4px 14px rgba(49, 46, 129, 0.25); color: white;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 5px;">
+                    <span style="font-size: 0.74rem; font-weight: 700; color: #a5b4fc; text-transform: uppercase; letter-spacing: 0.05em;">
+                        🏬 ร้านค้าที่เลือกอยู่
+                    </span>
+                    <span style="background: rgba(165, 180, 252, 0.25); border: 1px solid rgba(165, 180, 252, 0.5);
+                                 color: #e0e7ff; font-size: 0.68rem; font-weight: 700; padding: 1px 7px; border-radius: 999px;">
+                        {b_star}
+                    </span>
+                </div>
+                <div style="font-size: 1.05rem; font-weight: 800; color: #ffffff; line-height: 1.25;">
+                    {c_shop.get('name')}{h_txt}
+                </div>
+                <div style="font-size: 0.75rem; color: #c7d2fe; margin-top: 4px;">
+                    รหัสร้าน: <code style="background: rgba(0,0,0,0.3); color: #fbcfe8; padding: 1px 5px; border-radius: 4px; font-weight: 600;">{c_shop.get('code')}</code>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if len(all_act_shops) > 1:
+            cur_idx = s_codes.index(c_shop["code"]) if c_shop["code"] in s_codes else 0
+            sel_side_shop = st.selectbox(
+                "🔄 สลับเลือกร้านค้า:",
+                options=s_codes,
+                index=cur_idx,
+                format_func=_fmt_side_shop,
+                key="sidebar_active_shop_dropdown",
+                help="เลือกเพื่อสลับร้านค้าที่ต้องการดูหรือนำเข้าข้อมูล",
+            )
+            if sel_side_shop != c_shop["code"]:
+                set_current_shop(sel_side_shop)
+                st.rerun()
 
         if st.session_state.get("result") is not None:
             if st.button("🔄 ล้างข้อมูลที่เปิดอยู่", width="stretch", type="secondary"):
@@ -638,6 +735,9 @@ def render_period_selector(container=None, key: str = "global_period_sel") -> st
 
     idx = options.index(cur_period) if cur_period in options else 0
 
+    shops_map = {s["code"]: s["name"] for s in db.list_shops()}
+    shop_code_map = dict(zip(snaps["month"], snaps["shop_code"])) if "shop_code" in snaps.columns else {}
+
     def _fmt(opt: str) -> str:
         if opt == ALL_PERIODS_KEY:
             return f"📊 สรุปรวมทุกงวดและทุกช่องทาง ({len(saved_months)} งวด)"
@@ -645,11 +745,13 @@ def render_period_selector(container=None, key: str = "global_period_sel") -> st
         cnt_str = f"({int(cnt):,} ออเดอร์)" if cnt is not None else "(ยังไม่บันทึก)"
         if "(รวม)" in opt or "(รวมทุกงวด)" in opt:
             return f"📈 [รวมทุกช่องทาง] {opt} {cnt_str}"
-        elif "(ดีไวน์)" in opt:
-            return f"🏬 [ดีไวน์] {opt} {cnt_str}"
+        s_c = shop_code_map.get(opt, "")
+        s_name = shops_map.get(s_c, "")
+        if s_name:
+            return f"🏬 [{s_name}] {opt} {cnt_str}"
         elif "(" in opt and ")" in opt:
             return f"🏬 {opt} {cnt_str}"
-        return f"🏬 [มาตัง] งวด {opt} {cnt_str}"
+        return f"🏬 งวด {opt} {cnt_str}"
 
     selected = host.selectbox(
         "📅 เลือกดูข้อมูล (แยกตามเดือน / ช่องทาง หรือ สรุปรวมทุกงวดทั้งหมด):",

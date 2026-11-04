@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 
 import pandas as pd
 
@@ -173,6 +174,12 @@ def extract_order_skus(orders: pd.DataFrame) -> pd.DataFrame:
     tmp["ราคาต่อหน่วย"] = pd.to_numeric(tmp["ราคาต่อหน่วย"], errors="coerce").fillna(0.0)
     tmp["SKU Unit Original Price"] = pd.to_numeric(tmp["SKU Unit Original Price"], errors="coerce").fillna(0.0)
 
+    # กรอง Seller SKU: ไม่เอาค่าว่าง และไม่เอาตัวเลขล้วน 10 หลักขึ้นไป (ป้องกัน TikTok SKU ID หลุดเข้ามาเป็น SKU)
+    tmp["Seller SKU"] = tmp["Seller SKU"].fillna("").astype(str).str.strip().replace({"nan": "", "None": ""})
+    tmp = tmp[(tmp["Seller SKU"] != "") & (~tmp["Seller SKU"].str.fullmatch(r"\d{10,}"))]
+    if tmp.empty:
+        return pd.DataFrame(columns=["sku", "name", "category", "unit_cost", "list_price"])
+
     grouped = (
         tmp.groupby("Seller SKU")
         .agg(
@@ -235,11 +242,13 @@ def build_order_lines(orders: pd.DataFrame, sku_master: pd.DataFrame) -> pd.Data
         if drop_c in lines.columns:
             lines = lines.drop(columns=[drop_c])
 
-    # หาก Seller SKU เป็นค่าว่าง ให้ fallback ไปใช้ SKU ID เพื่อให้จับคู่ต้นทุนได้อัตโนมัติ (เคส TikTok ไม่ได้ใส่ Seller SKU)
-    if "SKU ID" in lines.columns:
-        s_sku = lines["Seller SKU"].fillna("").astype(str).str.strip().replace({"nan": "", "None": ""})
-        sku_id = lines["SKU ID"].fillna("").astype(str).str.strip().replace({"nan": "", "None": ""})
-        lines["Seller SKU"] = s_sku.where(s_sku != "", sku_id)
+    # ทำความสะอาด Seller SKU (ไม่นำ SKU ID มาแทนที่ Seller SKU)
+    if "Seller SKU" not in lines.columns:
+        lines["Seller SKU"] = ""
+    else:
+        lines["Seller SKU"] = lines["Seller SKU"].fillna("").astype(str).str.strip().replace({"nan": "", "None": ""})
+        # หากมีค่าตัวเลขล้วน 10 หลักขึ้นไปที่อาจเคยหลุดมาจาก SKU ID ให้ล้างออกเป็นค่าว่าง
+        lines["Seller SKU"] = lines["Seller SKU"].mask(lines["Seller SKU"].str.fullmatch(r"\d{10,}"), "")
 
     lines = lines.merge(master, on="Seller SKU", how="left")
     lines["cost_missing"] = lines["unit_cost"].isna() | (lines["unit_cost"] <= 0)
@@ -247,16 +256,55 @@ def build_order_lines(orders: pd.DataFrame, sku_master: pd.DataFrame) -> pd.Data
 
     # Fallback เสริม: ถ้ายังหาราคาทุนไม่เจอ ลองจับคู่ด้วยชื่อสินค้าจาก master
     if lines["cost_missing"].any() and "Product Name" in lines.columns:
-        valid_m = master[master["unit_cost"] > 0].dropna(subset=["name"])
+        valid_m = master[master["unit_cost"] > 0].dropna(subset=["name"]).copy()
         if not valid_m.empty:
-            name_map = dict(zip(valid_m["name"].str.strip(), valid_m["unit_cost"]))
+            # 1. ลองจับคู่ชื่อตรงกันทุกตัวอักษร
+            name_to_cost = dict(zip(valid_m["name"].str.strip(), valid_m["unit_cost"]))
+            name_to_sku = dict(zip(valid_m["name"].str.strip(), valid_m["Seller SKU"]))
             clean_names = lines.loc[lines["cost_missing"], "Product Name"].astype(str).str.strip()
-            filled = clean_names.map(name_map)
+            filled = clean_names.map(name_to_cost)
             can_fill = filled.notna() & (filled > 0)
             if can_fill.any():
                 fill_idx = filled[can_fill].index
                 lines.loc[fill_idx, "unit_cost"] = filled[can_fill]
                 lines.loc[fill_idx, "cost_missing"] = False
+                # ถ้าแถวนี้ Seller SKU ว่างอยู่ ให้ดึงรหัส Seller SKU จาก master มาใส่ให้อัตโนมัติ
+                empty_sku_mask = lines.loc[fill_idx, "Seller SKU"] == ""
+                if empty_sku_mask.any():
+                    match_skus = clean_names.loc[fill_idx[empty_sku_mask]].map(name_to_sku)
+                    lines.loc[fill_idx[empty_sku_mask], "Seller SKU"] = match_skus.fillna("")
+
+            # 2. จับคู่ชื่อแบบ Normalize (ตัด #รหัส, (GMV), (ชุดที่..), ขนาด.. เพื่อดึง Seller SKU และต้นทุนจริง)
+            still_missing = lines["cost_missing"] & (lines["Product Name"].fillna("") != "")
+            if still_missing.any():
+                def _norm_pname(s: str) -> str:
+                    s = str(s).strip()
+                    s = re.sub(r'#\d+', '', s)
+                    s = re.sub(r'\(GMV\)', '', s, flags=re.I)
+                    s = re.sub(r'\(ชุดที่\s*\d+\)', '', s)
+                    s = re.sub(r'ขนาด\s*\d+(?:\.\d+)?\s*(?:กรัม|ml|มล\.?|g)', '', s, flags=re.I)
+                    s = re.sub(r'\s+', ' ', s)
+                    return s.strip()
+
+                norm_m_cost = {}
+                norm_m_sku = {}
+                for _, mr in valid_m.iterrows():
+                    nm = _norm_pname(mr["name"])
+                    if nm and nm not in norm_m_cost:
+                        norm_m_cost[nm] = mr["unit_cost"]
+                        norm_m_sku[nm] = mr["Seller SKU"]
+
+                miss_norm = lines.loc[still_missing, "Product Name"].apply(_norm_pname)
+                filled_norm = miss_norm.map(norm_m_cost)
+                can_fill_norm = filled_norm.notna() & (filled_norm > 0)
+                if can_fill_norm.any():
+                    fn_idx = filled_norm[can_fill_norm].index
+                    lines.loc[fn_idx, "unit_cost"] = filled_norm[can_fill_norm]
+                    lines.loc[fn_idx, "cost_missing"] = False
+                    empty_sku_mask2 = lines.loc[fn_idx, "Seller SKU"] == ""
+                    if empty_sku_mask2.any():
+                        match_skus2 = miss_norm.loc[fn_idx[empty_sku_mask2]].map(norm_m_sku)
+                        lines.loc[fn_idx[empty_sku_mask2], "Seller SKU"] = match_skus2.fillna("")
 
     # คำนวณจำนวนขายสุทธิ และคอลัมน์ I (ราคาต่อหน่วย), คอลัมน์ J (มูลค่า)
     returned = lines["Sku Quantity of return"]
@@ -283,9 +331,9 @@ def find_missing_skus(lines: pd.DataFrame) -> pd.DataFrame:
     cols = ["sku", "name", "category", "qty", "orders_count"]
     if lines.empty:
         return pd.DataFrame(columns=cols)
-    miss = lines[lines["cost_missing"] & ~lines["is_cancelled"] & (lines["net_qty"] > 0)]
+    miss = lines[lines["cost_missing"] & ~lines["is_cancelled"] & (lines["net_qty"] > 0)].copy()
     if miss.empty:
-        miss = lines[lines["cost_missing"]]
+        miss = lines[lines["cost_missing"]].copy()
         if miss.empty:
             return pd.DataFrame(columns=cols)
     sku_c = "Seller SKU" if "Seller SKU" in miss.columns else miss.columns[0]
@@ -294,18 +342,23 @@ def find_missing_skus(lines: pd.DataFrame) -> pd.DataFrame:
     q_col = "net_qty" if "net_qty" in miss.columns else ("Quantity" if "Quantity" in miss.columns else sku_c)
     o_col = ORDER_KEY if ORDER_KEY in miss.columns else miss.columns[0]
 
+    # ทำความสะอาด Seller SKU: ถ้าว่าง หรือเป็นเลขล้วน 10 หลักขึ้นไป ให้ระบุเป็น (ไม่ระบุ SKU)
+    clean_sku = miss[sku_c].fillna("").astype(str).str.strip().replace({"nan": "", "None": ""})
+    clean_sku = clean_sku.mask(clean_sku.str.fullmatch(r"\d{10,}"), "")
+    miss["_display_sku"] = clean_sku.where(clean_sku != "", "(ไม่ระบุ SKU)")
+
+    # จัดกลุ่มโดยใช้ _display_sku ร่วมกับ p_name เพื่อไม่ให้สินค้าที่ไม่มี SKU คนละรายการถูกยุบรวมกัน
     return (
-        miss.groupby(sku_c)
+        miss.groupby(["_display_sku", p_name], dropna=False)
         .agg(
-            name=(p_name, "first"),
             category=(cat_c, "first"),
             qty=(q_col, "sum") if q_col != sku_c else ("count", "sum"),
             orders_count=(o_col, "nunique"),
         )
         .reset_index()
-        .rename(columns={sku_c: "sku"})
+        .rename(columns={"_display_sku": "sku", p_name: "name"})
         .sort_values("qty", ascending=False)
-    )
+    )[cols]
 
 
 def _order_level_from_lines(lines: pd.DataFrame) -> pd.DataFrame:

@@ -49,12 +49,14 @@ from core.pipeline import (
 )
 from core.ui import (
     baht,
+    get_current_shop,
     is_admin,
     load_period_result,
     render_kpi_card,
     render_page_header,
     render_section_header,
     require_login,
+    set_current_shop,
     summarize_for_period,
 )
 
@@ -192,7 +194,7 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
     edited_data = st.data_editor(
         edit_display,
         column_config={
-            "รหัส SKU": st.column_config.TextColumn("รหัส SKU", disabled=True),
+            "รหัส SKU": st.column_config.TextColumn("รหัส SKU", help="รหัสสินค้า (สามารถพิมพ์ตั้งรหัสใหม่ได้หากต้องการ)"),
             "ชื่อสินค้า": st.column_config.TextColumn("ชื่อสินค้า", disabled=True),
             "หมวดหมู่": st.column_config.TextColumn("หมวดหมู่", disabled=True),
             "จำนวนที่ขาย (ชิ้น)": st.column_config.NumberColumn("จำนวนที่ขาย (ชิ้น)", disabled=True, format="%d"),
@@ -226,9 +228,13 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
             else:
                 saved_count = 0
                 for _, r in filled_rows.iterrows():
+                    s_code = str(r["รหัส SKU"]).strip()
+                    p_name = str(r["ชื่อสินค้า"]).strip()
+                    if not s_code or s_code in ("(ไม่ระบุ SKU)", "nan", "None"):
+                        s_code = p_name
                     db.upsert_sku(
-                        sku=str(r["รหัส SKU"]).strip(),
-                        name=str(r["ชื่อสินค้า"]).strip(),
+                        sku=s_code,
+                        name=p_name,
                         category=str(r["หมวดหมู่"]).strip(),
                         unit_cost=float(r["ราคาทุนต่อหน่วย (บาท)"]),
                         list_price=float(r["ราคาตั้งขาย (บาท)"]),
@@ -385,6 +391,9 @@ shops_list = db.list_shops(active_only=True)
 shop_codes = [s["code"] for s in shops_list]
 shop_map = {s["code"]: s for s in shops_list}
 
+active_shop = get_current_shop()
+cur_idx = shop_codes.index(active_shop["code"]) if active_shop["code"] in shop_codes else 0
+
 col_s1, col_s2 = st.columns([3, 1.2], vertical_alignment="bottom")
 with col_s1:
     def _shop_lbl(c: str) -> str:
@@ -396,11 +405,13 @@ with col_s1:
     cur_selected_shop_code = st.selectbox(
         "🏬 เลือกร้านค้า / ช่องทาง TikTok Shop ของชุดข้อมูลนี้:",
         options=shop_codes,
-        index=0,
+        index=cur_idx,
         format_func=_shop_lbl,
         key="global_upload_shop_select",
         help="เลือกร้านค้าเพื่อแยกเก็บผลการวิเคราะห์และส่งออกไฟล์ต้นทุนตามชื่อร้าน",
     )
+    if cur_selected_shop_code != active_shop["code"]:
+        set_current_shop(cur_selected_shop_code)
     active_shop_info = shop_map.get(cur_selected_shop_code, shops_list[0])
 
 with col_s2:
@@ -460,7 +471,7 @@ if st.session_state.get("show_shop_manager_inline"):
                             st.error("กรุณากรอกชื่อร้าน")
 
             with tab_sm_del:
-                del_list = [s["code"] for s in all_db_shops if s["code"] not in ("matang",)]
+                del_list = [s["code"] for s in all_db_shops if not s.get("is_default") and len(all_db_shops) > 1]
                 if del_list:
                     d_code = st.selectbox("เลือกร้านที่ต้องการลบ:", options=del_list, key="inline_sel_del_shop")
                     d_shop_info = next((s for s in all_db_shops if s["code"] == d_code), None)
@@ -470,8 +481,38 @@ if st.session_state.get("show_shop_manager_inline"):
                         if db.delete_shop(d_code):
                             st.toast(f"ลบช่องทาง {d_name} เรียบร้อยแล้ว", icon="🗑️")
                             st.rerun()
+                        else:
+                            st.error("ไม่สามารถลบร้านค้านี้ได้")
                 else:
-                    st.info("ℹ️ ไม่มีช่องทางย่อยที่สามารถลบได้ (ร้านหลัก 'matang' ไม่สามารถลบได้)")
+                    st.info("ℹ️ ไม่มีช่องทางย่อยที่สามารถลบได้ (ร้านที่ตั้งเป็น 'ร้านหลัก' หรือร้านสุดท้ายในระบบจะไม่สามารถลบได้ หากต้องการลบ กรุณาตั้งร้านอื่นเป็นร้านหลักก่อน)")
+
+b_type = "★ ช่องทางหลัก" if active_shop_info.get("is_default") else "ช่องทางย่อย"
+h_txt = f" ({active_shop_info.get('tiktok_handle')})" if active_shop_info.get("tiktok_handle") else ""
+st.markdown(
+    f"""
+    <div style="background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+                border: 1.5px solid #818cf8; border-radius: 14px; padding: 14px 20px; margin-top: 14px; margin-bottom: 20px;
+                box-shadow: 0 4px 15px rgba(99, 102, 241, 0.08); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 14px;">
+            <div style="width: 44px; height: 44px; border-radius: 12px; background: #4f46e5; color: white; display: flex; align-items: center; justify-content: center; font-size: 1.4rem;">
+                🏬
+            </div>
+            <div>
+                <div style="font-size: 0.80rem; font-weight: 700; color: #4338ca; text-transform: uppercase; letter-spacing: 0.05em;">
+                    กำลังทำงานในร้านค้า ({b_type})
+                </div>
+                <div style="font-size: 1.25rem; font-weight: 800; color: #1e1b4b;">
+                    {active_shop_info.get('name')}{h_txt} <span style="font-size: 0.92rem; font-weight: 600; color: #6366f1;">(รหัส: {cur_selected_shop_code})</span>
+                </div>
+            </div>
+        </div>
+        <div style="background: #ffffff; border: 1px solid #c7d2fe; border-radius: 10px; padding: 7px 16px; font-size: 0.88rem; color: #4338ca; font-weight: 700;">
+            📁 ไฟล์และผลการคำนวณจะถูกบันทึกเข้าสู่ร้านค้านี้
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 tab_dual_upload, tab_from_data, tab_multi_upload = st.tabs(
     [

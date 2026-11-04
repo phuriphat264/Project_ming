@@ -131,9 +131,12 @@ with tab_shops:
 
                 # ปุ่มลบแยกออกมาพร้อมยืนยันความปลอดภัย
                 st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-                is_main_shop = shop_data["code"] in ("matang",)
-                if is_main_shop:
-                    st.info("ℹ️ ร้านหลักของบริษัท (`matang`) ได้รับการปกป้อง ไม่สามารถลบออกจากระบบได้")
+                is_current_default = bool(shop_data.get("is_default"))
+                is_only_shop = len(shops_all) <= 1
+                if is_current_default:
+                    st.info("ℹ️ ร้านนี้ถูกตั้งเป็น **'ร้านหลัก'** อยู่ จึงไม่สามารถลบได้ หากต้องการลบ กรุณาตั้งร้านอื่นเป็นร้านหลักก่อน")
+                elif is_only_shop:
+                    st.info("ℹ️ ระบบต้องมีร้านค้าเหลืออยู่อย่างน้อย 1 ร้าน จึงไม่สามารถลบได้")
                 else:
                     with st.expander(f"🗑️ ลบช่องทาง '{shop_data['name']}'", expanded=False):
                         st.warning(f"⚠️ คุณแน่ใจหรือไม่ว่าต้องการลบช่องทาง **{shop_data['name']} (`{shop_data['code']}`)**? (การลบนี้ไม่สามารถย้อนคืนได้)")
@@ -144,7 +147,7 @@ with tab_shops:
                                 st.session_state.pop("editing_shop_code", None)
                                 st.rerun()
                             else:
-                                st.error("ไม่สามารถลบช่องทางนี้ได้")
+                                st.error("ไม่สามารถลบช่องทางนี้ได้ กรุณาตรวจสอบว่าไม่ได้เป็นร้านหลัก")
 
 # ==============================================================================
 # แท็บที่ 2: จัดการผู้ใช้งานระบบ
