@@ -188,6 +188,31 @@ button[kind="secondary"]:hover, [data-testid="baseButton-secondary"]:hover {
     box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2) !important;
 }
 
+/* 6.1 ตกแต่ง Selectbox ไม่ให้เป็นกล่องดำ */
+.stSelectbox div[data-baseweb="select"] > div {
+    background-color: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #0f172a !important;
+    border-radius: 12px !important;
+}
+
+.stSelectbox div[data-baseweb="select"] span {
+    color: #0f172a !important;
+    font-weight: 600 !important;
+}
+
+[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] > div {
+    background-color: rgba(30, 27, 75, 0.9) !important;
+    border: 1px solid #4338ca !important;
+    color: #ffffff !important;
+    border-radius: 12px !important;
+}
+
+[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] span {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+}
+
 /* 7. แท็บ (Tabs) สไตล์ Segmented Floating Pill */
 .stTabs [data-baseweb="tab-list"] {
     gap: 8px;

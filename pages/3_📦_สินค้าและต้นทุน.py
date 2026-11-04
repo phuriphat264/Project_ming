@@ -435,7 +435,7 @@ with tab_mappings:
             })
             st.dataframe(
                 m_disp[["ชื่อสินค้าใน TikTok", "รหัส SKU ที่ผูก", "ราคาทุน (บาท)", "วันที่บันทึก"]],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 

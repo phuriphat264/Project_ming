@@ -113,6 +113,28 @@ def init_db(db_path: Path | None = None) -> None:
         if "list_price" not in existing_cols:
             c.execute("ALTER TABLE sku ADD COLUMN list_price REAL DEFAULT 0")
 
+        # กวาดล้างรหัส SKU ที่เป็นตัวเลข TikTok 10 หลักขึ้นไปที่อาจเคยหลุดเข้ามาในตาราง SKU
+        c.execute("DELETE FROM sku WHERE LENGTH(sku) >= 10 AND sku GLOB '[0-9]*'")
+
+        # เมล็ดพันธุ์การจับคู่ชื่อสินค้าเริ่มต้นสำหรับชุดสินค้าที่ไม่มี Seller SKU จาก TikTok
+        default_mappings = [
+            ("มาส์กพรีเมี่ยมคอลลาเจน 2 กระปุก (ชุดที่1)", "FZQCS007002"),
+            ("สบู่ไฮโดรวิตซี 3 ก้อน (ชุดที่1) #2508096", "FZQCS009003"),
+            ("โดสไฮโดร 100 ml. 2 ขวด", "FZQCS004002"),
+            ("โดสไฮโดร 100 ml. 5 ขวด", "FZQCS004005"),
+            ("มาส์กพรีเมี่ยมคอลลาเจน 2 กระปุก", "FZQCS007002"),
+            ("สบู่ไฮโดรวิตซี 3 ก้อน", "FZQCS009003"),
+            ("สบู่ไฮโดรมะนาว 3 ก้อน", "FZQCS008003"),
+            ("เอเอชเอ ไฮโดร เอ็กตร้า พลัส ครีม 50 กรัม 3 กป", "FZQCS026003"),
+            ("ลูมิกลาส ดูโอ ออยล์ 80 ml. 2 ขวด", "FBDCS005002"),
+        ]
+        now_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for p_name, s_code in default_mappings:
+            c.execute(
+                "INSERT OR IGNORE INTO product_sku_mappings (product_name, sku, created_at) VALUES (?, ?, ?)",
+                (p_name, s_code, now_dt),
+            )
+
         # เพิ่มคอลัมน์ shop_code ใน monthly_snapshots หากยังไม่มี
         snap_cols = {r[1] for r in c.execute("PRAGMA table_info(monthly_snapshots)").fetchall()}
         if "shop_code" not in snap_cols:
