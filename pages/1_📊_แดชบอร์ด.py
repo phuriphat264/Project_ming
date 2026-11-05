@@ -47,6 +47,7 @@ render_page_header(title="📊 เช็กกำไร / ขาดทุน ต
 # เลือกสลับเดือน หรือ สรุปรวมทุกงวดทั้งหมด + ทางลัดไปหน้าแก้ไขต้นทุน/ค่าใช้จ่าย
 top_bar_1, top_bar_2 = st.columns([1.5, 1.5], gap="medium")
 period = render_period_selector(container=top_bar_1, key="dash_period_sel")
+res_full = st.session_state.get("result") or res_full
 
 # กรณีข้อมูลในมุมมองที่เลือกมีหลายเดือนปฏิทิน (เช่น สรุปรวมทุกงวด หรือไฟล์เดียวมีออเดอร์ข้ามเดือน) ให้กรองเจาะเดือนปฏิทินได้ด้วย
 cal_months = list_calendar_months(res_full)
@@ -184,7 +185,7 @@ with k4:
 PLOT_CFG = {"displayModeBar": False}
 
 # 2.5 กราฟและตารางเปรียบเทียบผลประกอบการแยกตามแต่ละเดือน (แสดงเมื่อดูสรุปรวมทุกงวด หรือมีตั้งแต่ 2 งวดขึ้นไป)
-comp_df = build_saved_periods_comparison_df() if len(snapshots) >= 1 else None
+comp_df = build_saved_periods_comparison_df(shop_code=cur_shop["code"]) if len(snapshots) >= 1 else None
 cal_comp_df = calendar_monthly_trend(res_full) if len(cal_months) >= 2 else None
 
 if comp_df is not None and (period == ALL_PERIODS_KEY or len(comp_df) >= 2):

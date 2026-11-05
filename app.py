@@ -28,8 +28,13 @@ cur_shop = get_current_shop()
 
 skus = db.get_skus()
 snapshots = db.list_snapshots(shop_code=cur_shop["code"])
-latest_period = snapshots.iloc[0]["month"] if not snapshots.empty else None
-active_period = st.session_state.get("period", latest_period or "-")
+valid_months = snapshots["month"].tolist() if not snapshots.empty else []
+latest_period = valid_months[0] if valid_months else None
+sess_period = st.session_state.get("period")
+if sess_period and (sess_period in valid_months or (sess_period == ALL_PERIODS_KEY and len(valid_months) >= 2)):
+    active_period = sess_period
+else:
+    active_period = latest_period or "-"
 
 render_page_header(
     title="🏢 Matang Cosmetic Cost & Profit System",
@@ -115,6 +120,8 @@ if user["role"] == "admin":
                 if st.form_submit_button("บันทึกช่องทางใหม่", type="primary", width="stretch"):
                     if add_code and add_name:
                         db.upsert_shop(add_code, add_name, add_handle, is_default=add_def)
+                        if add_def:
+                            set_current_shop(db.get_default_shop()["code"])
                         st.toast(f"✅ เพิ่มช่องทาง {add_name} สำเร็จแล้ว", icon="🏬")
                         st.rerun()
                     else:

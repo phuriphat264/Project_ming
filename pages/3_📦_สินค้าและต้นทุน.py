@@ -30,11 +30,16 @@ render_page_header("จัดการตาราง SKU (ราคาทุน
 
 
 def _clear_export_caches() -> None:
-    st.session_state.pop("_cached_master_excel_key", None)
-    st.session_state.pop("_cached_master_excel_bytes", None)
-    st.session_state.pop("_cached_rep_key", None)
-    st.session_state.pop("_cached_rep_master_xlsx", None)
-    st.session_state.pop("_cached_rep_xlsx", None)
+    for ck in (
+        "_cached_master_excel_key",
+        "_cached_master_excel_bytes",
+        "_cached_rep_key",
+        "_cached_rep_master_xlsx",
+        "_cached_rep_xlsx",
+        "_cached_page2_rep_key",
+        "_cached_page2_rep_xlsx",
+    ):
+        st.session_state.pop(ck, None)
 
 
 # ==================== DIALOGS: SKU ====================
@@ -133,6 +138,7 @@ def clear_all_skus_dialog(count: int) -> None:
     c1, c2 = st.columns(2)
     if c1.button("🗑️ ยืนยัน ลบทั้งหมด", type="primary", width="stretch"):
         db.clear_all_skus()
+        _clear_export_caches()
         st.toast("ลบข้อมูลต้นทุนสินค้าทั้งหมดเรียบร้อยแล้ว")
         st.rerun()
     if c2.button("ยกเลิก", type="secondary", width="stretch"):
@@ -419,6 +425,7 @@ with tab_mappings:
                         st.error("กรุณาระบุรหัส SKU")
                     else:
                         db.upsert_sku_mapping(map_pname.strip(), chosen_sku)
+                        _clear_export_caches()
                         st.toast(f"บันทึกการจับคู่ '{chosen_sku}' สำเร็จแล้ว")
                         st.rerun()
 
@@ -443,6 +450,7 @@ with tab_mappings:
                 del_target = st.selectbox("เลือกชื่อสินค้าที่ต้องการลบการจับคู่:", options=mappings_df["product_name"].tolist())
                 if st.button("🗑️ ยืนยันลบการจับคู่นี้", type="secondary"):
                     db.delete_sku_mapping(del_target)
+                    _clear_export_caches()
                     st.toast(f"ลบการจับคู่ '{del_target}' เรียบร้อยแล้ว")
                     st.rerun()
 
@@ -485,7 +493,9 @@ with tab_bulk:
                     st.error("ไม่พบคอลัมน์ 'รหัส' และ 'ราคาทุน'")
                 else:
                     if st.button(f"💾 นำเข้า {len(df)} รายการ", type="primary", width="stretch"):
-                        st.success(f"นำเข้า {db.upsert_skus(df)} รายการสำเร็จ")
+                        cnt_imp = db.upsert_skus(df)
+                        _clear_export_caches()
+                        st.success(f"นำเข้า {cnt_imp} รายการสำเร็จ")
                         st.rerun()
     with col_out:
         with st.container(border=True):

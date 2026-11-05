@@ -70,8 +70,10 @@ shop_codes = [s["code"] for s in shops_list]
 shop_map = {s["code"]: s for s in shops_list}
 
 active_shop = get_current_shop()
-if "global_upload_shop_select" not in st.session_state or st.session_state["global_upload_shop_select"] not in shop_codes:
+if active_shop["code"] in shop_codes:
     st.session_state["global_upload_shop_select"] = active_shop["code"]
+elif "global_upload_shop_select" not in st.session_state or st.session_state["global_upload_shop_select"] not in shop_codes:
+    st.session_state["global_upload_shop_select"] = shop_codes[0]
 
 col_s1, col_s2 = st.columns([3, 1.2], vertical_alignment="bottom")
 with col_s1:
@@ -85,7 +87,6 @@ with col_s1:
         sel_c = st.session_state.get("global_upload_shop_select")
         if sel_c:
             set_current_shop(sel_c)
-            st.rerun()
 
     cur_selected_shop_code = st.selectbox(
         "🏬 เลือกร้านค้า / ช่องทาง TikTok Shop ที่ต้องการจัดการ:",
@@ -148,6 +149,10 @@ if st.session_state.get("show_shop_manager_inline"):
                     if st.form_submit_button("💾 บันทึกการแก้ไข", type="primary", width="stretch"):
                         if ed_name:
                             db.upsert_shop(cur_s_data["code"], ed_name, ed_handle, is_default=ed_def, is_active=ed_act)
+                            if not ed_act and st.session_state.get("active_shop_code") == cur_s_data["code"]:
+                                set_current_shop(db.get_default_shop()["code"])
+                            elif ed_def:
+                                set_current_shop(cur_s_data["code"])
                             st.toast(f"✅ อัปเดตข้อมูลร้าน {ed_name} สำเร็จแล้ว", icon="🎉")
                             st.rerun()
                         else:
@@ -163,9 +168,7 @@ if st.session_state.get("show_shop_manager_inline"):
                     if st.button(f"🗑️ ลบ {d_code} ทันที", type="secondary", width="stretch", key="btn_del_shop_inline"):
                         if db.delete_shop(d_code):
                             if st.session_state.get("active_shop_code") == d_code:
-                                st.session_state.pop("active_shop_code", None)
-                                st.session_state.pop("global_upload_shop_select", None)
-                                st.session_state.pop("sidebar_active_shop_dropdown", None)
+                                set_current_shop(db.get_default_shop()["code"])
                             st.toast(f"ลบช่องทาง {d_name} เรียบร้อยแล้ว", icon="🗑️")
                             st.rerun()
                         else:
@@ -211,6 +214,28 @@ st.markdown(
 
 
 def _save_period_snapshot(period_name: str, res_obj, shop_code: str | None = None) -> None:
+    eff_shop = (
+        shop_code
+        or getattr(res_obj, "shop_code", None)
+        or get_current_shop().get("code")
+        or "matang"
+    )
+    if eff_shop in ("settlement", "orders_only"):
+        eff_shop = get_current_shop().get("code") or "matang"
+
+    if period_name == ALL_PERIODS_KEY:
+        snaps_s = db.list_snapshots(shop_code=eff_shop)
+        if not snaps_s.empty:
+            from core.ui import _snapshot_to_pipeline_result
+            latest_skus = db.get_skus()
+            for m_each in snaps_s["month"].tolist():
+                ld_each = db.load_snapshot(m_each, shop_code=eff_shop)
+                if ld_each:
+                    r_each = recalculate_with_skus(_snapshot_to_pipeline_result(ld_each), latest_skus)
+                    r_each.shop_code = eff_shop
+                    _save_period_snapshot(m_each, r_each, shop_code=eff_shop)
+        return
+
     fixed = db.total_fixed_cost(period_name)
     comm_pct = db.get_comm_pct(period_name)
     s_obj = summarize(res_obj, fixed_costs=fixed, comm_pct=comm_pct)
@@ -226,7 +251,7 @@ def _save_period_snapshot(period_name: str, res_obj, shop_code: str | None = Non
         withdrawals_df=res_obj.withdrawals,
         raw_settlement_df=getattr(res_obj, "raw_settlement", None),
         raw_orders_df=getattr(res_obj, "raw_orders", None),
-        shop_code=shop_code,
+        shop_code=eff_shop,
     )
 
 
@@ -258,7 +283,7 @@ def _process_income_with_orders(
         db.add_missing_skus(extract_order_skus(combined.orders))
 
     sku_master = db.get_skus()
-    result = run_pipeline(combined, sku_master)
+    result = run_pipeline(combined, sku_master, shop_code=s_code)
     all_names = [income_name] + [on for on, _ in order_items]
     period = detect_period_label(result, all_names, shop=shop)
 
@@ -274,8 +299,9 @@ def _process_income_with_orders(
     # แคชเตรียมไฟล์ Master Excel ล่วงหน้าระหว่างที่มี spinner นำเข้า
     try:
         master_bytes = build_company_cost_master_excel(result, sku_master, period_label=period)
+        cogs_sig = round(float(result.orders["cogs"].sum()), 2) if not result.orders.empty else 0.0
         st.session_state["_cached_master_excel_bytes"] = master_bytes
-        st.session_state["_cached_master_excel_key"] = f"{period}_{len(result.orders)}_{len(sku_master)}"
+        st.session_state["_cached_master_excel_key"] = f"{s_code}_{period}_{len(result.orders)}_{len(sku_master)}_{cogs_sig}"
     except Exception:
         pass
 
@@ -301,11 +327,28 @@ def _process_income_with_orders(
     st.rerun()
 
 
-def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: str = "top") -> None:
+def _render_missing_skus_editor(
+    res_obj,
+    sku_df,
+    period_name: str,
+    key_prefix: str = "top",
+    shop_code: str | None = None,
+) -> None:
     """ตารางและแบบฟอร์มกำหนดรหัส SKU และราคาทุนให้สินค้าที่ไม่มี SKU พร้อมคำนวณกำไรใหม่ทันที"""
+    import hashlib
+
     if res_obj.missing_skus.empty:
         st.success("✅ สินค้าทุกรหัสในงวดนี้มีรหัส SKU และราคาทุนครบ 100% แล้ว")
         return
+
+    eff_shop_code = (
+        shop_code
+        or getattr(res_obj, "shop_code", None)
+        or get_current_shop().get("code")
+        or "matang"
+    )
+    if eff_shop_code in ("settlement", "orders_only"):
+        eff_shop_code = get_current_shop().get("code") or "matang"
 
     edit_df = res_obj.missing_skus.copy()
     q_col = "qty" if "qty" in edit_df.columns else edit_df.columns[0]
@@ -313,7 +356,6 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
 
     sku_to_list = dict(zip(sku_df["sku"].astype(str).str.strip(), sku_df["list_price"]))
     sku_to_cost = dict(zip(sku_df["sku"].astype(str).str.strip(), sku_df["unit_cost"]))
-    sku_to_name = dict(zip(sku_df["sku"].astype(str).str.strip(), sku_df["name"]))
 
     # =========================================================================
     # ส่วนที่ 1: แบบฟอร์มกำหนดรหัส SKU (ขอช่องใส่ SKU ให้ตัวที่ไม่มี SKU)
@@ -335,6 +377,10 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
     )
 
     items_list = edit_df.to_dict("records")
+    sel_idx_key = f"{key_prefix}_sel_missing_item_idx"
+    if sel_idx_key in st.session_state and st.session_state[sel_idx_key] not in range(len(items_list)):
+        st.session_state[sel_idx_key] = 0
+
     def _item_fmt(idx: int) -> str:
         row = items_list[idx]
         sku_lbl = f"[{row['sku']}] " if row['sku'] != "(ไม่ระบุ SKU)" else "[⚠️ ไม่มี SKU] "
@@ -346,7 +392,7 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
         "📦 1. เลือกสินค้าที่ต้องการกำหนดรหัส SKU / ใส่ราคาทุน:",
         options=list(range(len(items_list))),
         format_func=_item_fmt,
-        key=f"{key_prefix}_sel_missing_item_idx",
+        key=sel_idx_key,
     )
     cur_item = items_list[sel_idx]
     orig_name = str(cur_item.get("name", "")).strip()
@@ -363,17 +409,23 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
             f"{s['sku']} | {str(s['name'])[:40]} (ทุน ฿{s['unit_cost']:.2f})" for s in master_skus
         ]
 
+        # เมื่อผู้ใช้เปลี่ยนสินค้าที่เลือก ให้รีเซ็ตตัวเลือกจับคู่ SKU กลับไปค่าเริ่มต้นก่อนสร้าง widget
+        item_sig = hashlib.md5(f"{orig_sku}|{orig_name}".encode("utf-8")).hexdigest()[:8]
+        sel_master_key = f"{key_prefix}_sel_master_match"
+        if st.session_state.get(f"{key_prefix}_last_item_sig") != item_sig or st.session_state.get(sel_master_key) not in master_opts:
+            st.session_state[sel_master_key] = master_opts[0]
+            st.session_state[f"{key_prefix}_last_item_sig"] = item_sig
+
         with f_col1:
             sel_master = st.selectbox(
                 "🔗 เลือกจับคู่กับ SKU ที่มีอยู่ในระบบแล้ว (ถ้ามี):",
                 options=master_opts,
-                index=0,
-                key=f"{key_prefix}_sel_master_match",
+                key=sel_master_key,
                 help="หากสินค้านี้ตรงกับ SKU ใดในคลัง เลือกตรงนี้เพื่อดึงรหัสและราคาทุนมาใช้ทันที",
             )
             prefill_sku = ""
             prefill_cost = 0.0
-            prefill_list = 0.0
+            prefill_list = float(sku_to_list.get(orig_sku, 0.0))
             if sel_master != master_opts[0]:
                 matched_sku_code = sel_master.split(" | ")[0].strip()
                 prefill_sku = matched_sku_code
@@ -382,16 +434,24 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
             elif not is_blank_sku:
                 prefill_sku = orig_sku
 
+            # ซิงก์ค่าลงช่องกรอกอัตโนมัติทันทีเมื่อเปลี่ยนสินค้าที่เลือก หรือเปลี่ยนตัวเลือกจับคู่ SKU
+            form_sig = hashlib.md5(f"{orig_sku}|{orig_name}|{sel_master}".encode("utf-8")).hexdigest()[:10]
+            if st.session_state.get(f"{key_prefix}_last_form_sig") != form_sig:
+                st.session_state[f"{key_prefix}_input_assigned_sku"] = prefill_sku
+                st.session_state[f"{key_prefix}_input_assigned_name"] = orig_name
+                st.session_state[f"{key_prefix}_input_assigned_cost"] = float(prefill_cost if prefill_cost > 0 else 0.0)
+                st.session_state[f"{key_prefix}_input_assigned_list"] = float(prefill_list if prefill_list > 0 else 0.0)
+                st.session_state[f"{key_prefix}_input_assigned_cat"] = str(cur_item.get("category", "ทั่วไป"))
+                st.session_state[f"{key_prefix}_last_form_sig"] = form_sig
+
             assigned_sku = st.text_input(
                 "🏷️ ช่องพิมพ์รหัส SKU ที่ต้องการกำหนดให้สินค้านี้ *:",
-                value=prefill_sku,
                 placeholder="เช่น FZQCS009003 หรือ รหัสสินค้าที่ต้องการ",
                 key=f"{key_prefix}_input_assigned_sku",
                 help="พิมพ์รหัส SKU ของสินค้าชิ้นนี้ (ระบบจะผูกชื่อสินค้านี้เข้ากับรหัส SKU นี้ตลอดไป)",
             )
             assigned_name = st.text_input(
                 "📝 ชื่อสินค้า (แก้ไขได้หากต้องการ):",
-                value=orig_name,
                 key=f"{key_prefix}_input_assigned_name",
             )
 
@@ -400,7 +460,6 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
                 "💵 ราคาทุนต่อหน่วย (บาท) *:",
                 min_value=0.0,
                 step=1.0,
-                value=prefill_cost if prefill_cost > 0 else 0.0,
                 format="%.2f",
                 key=f"{key_prefix}_input_assigned_cost",
                 help="ต้นทุนต่อ 1 ชิ้นของสินค้านี้",
@@ -409,13 +468,11 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
                 "🏷️ ราคาตั้งขาย (บาท):",
                 min_value=0.0,
                 step=1.0,
-                value=prefill_list if prefill_list > 0 else float(sku_to_list.get(orig_sku, 0.0)),
                 format="%.2f",
                 key=f"{key_prefix}_input_assigned_list",
             )
             assigned_cat = st.text_input(
                 "📁 หมวดหมู่สินค้า:",
-                value=str(cur_item.get("category", "ทั่วไป")),
                 key=f"{key_prefix}_input_assigned_cat",
             )
 
@@ -428,34 +485,39 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
                     st.warning("⚠️ กรุณาระบุราคาทุนต่อหน่วยที่มากกว่า 0 บาท")
                 else:
                     # 1. บันทึกการจับคู่ชื่อสินค้า -> SKU ลงฐานข้อมูล
-                    db.upsert_sku_mapping(orig_name, clean_sku_val)
-                    if assigned_name != orig_name:
-                        db.upsert_sku_mapping(assigned_name, clean_sku_val)
+                    if orig_name:
+                        db.upsert_sku_mapping(orig_name, clean_sku_val)
+                    if assigned_name.strip() and assigned_name.strip() != orig_name:
+                        db.upsert_sku_mapping(assigned_name.strip(), clean_sku_val)
 
                     # 2. บันทึก SKU เข้าสู่ Master
                     db.upsert_sku(
                         sku=clean_sku_val,
-                        name=assigned_name,
+                        name=assigned_name.strip() or orig_name,
                         category=assigned_cat.strip() or "ทั่วไป",
                         unit_cost=assigned_cost,
                         list_price=assigned_list,
                     )
 
-                    # 3. อัปเดต Seller SKU ลงใน Order Lines ของชุดข้อมูลปัจจุบันทันที
-                    if not res_obj.order_lines.empty and "Product Name" in res_obj.order_lines.columns:
+                    # 3. อัปเดต Seller SKU ลงใน Order Lines และ Raw Orders ของชุดข้อมูลปัจจุบันทันที
+                    if not res_obj.order_lines.empty and "Product Name" in res_obj.order_lines.columns and orig_name:
                         mask_pn = res_obj.order_lines["Product Name"].fillna("").astype(str).str.strip() == orig_name
                         res_obj.order_lines.loc[mask_pn, "Seller SKU"] = clean_sku_val
+                    raw_o_df = getattr(res_obj, "raw_orders", None)
+                    if raw_o_df is not None and not raw_o_df.empty and "Product Name" in raw_o_df.columns and "Seller SKU" in raw_o_df.columns and orig_name:
+                        mask_ro = raw_o_df["Product Name"].fillna("").astype(str).str.strip() == orig_name
+                        raw_o_df.loc[mask_ro, "Seller SKU"] = clean_sku_val
 
                     # 4. คำนวณใหม่
                     new_sku_df = db.get_skus()
                     updated_res = recalculate_with_skus(res_obj, new_sku_df)
+                    updated_res.shop_code = eff_shop_code
                     st.session_state["result"] = updated_res
-                    st.session_state.pop("_cached_master_excel_bytes", None)
-                    st.session_state.pop("_cached_master_excel_key", None)
+                    for ck in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_page2_rep_xlsx", "_cached_page2_rep_key", "_cached_rep_xlsx", "_cached_rep_key"):
+                        st.session_state.pop(ck, None)
 
-                    s_code = getattr(updated_res, "source", None) or "matang"
                     if is_admin():
-                        _save_period_snapshot(period_name, updated_res, shop_code=s_code)
+                        _save_period_snapshot(period_name, updated_res, shop_code=eff_shop_code)
 
                     st.toast(f"✅ บันทึกรหัส SKU '{clean_sku_val}' และคำนวณกำไรใหม่เรียบร้อยแล้ว!", icon="🎉")
                     st.rerun()
@@ -464,6 +526,7 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
     # ส่วนที่ 2: ตาราง Data Editor สำหรับกรอกแบบเร็วหลายรายการ
     # =========================================================================
     with st.expander("📋 หรือเปิดตารางกรอกราคาทุนแบบตารางด่วน (Bulk Data Editor)", expanded=False):
+        reset_cnt = st.session_state.get(f"{key_prefix}_tbl_reset_cnt", 0)
         edit_display = pd.DataFrame({
             "รหัส SKU (ระบุรหัสได้ที่นี่ ⭐)": edit_df["sku"].astype(str).replace({"(ไม่ระบุ SKU)": ""}),
             "ชื่อสินค้า": edit_df["name"].fillna("").astype(str),
@@ -490,19 +553,19 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
                     "ราคาทุนต่อหน่วย (บาท) ⭐",
                     min_value=0.0,
                     step=1.0,
-                    format="฿%.2f",
+                    format="%.2f",
                     required=True,
                 ),
                 "ราคาตั้งขาย (บาท)": st.column_config.NumberColumn(
                     "ราคาตั้งขาย (บาท)",
                     min_value=0.0,
                     step=1.0,
-                    format="฿%.2f",
+                    format="%.2f",
                 ),
             },
             hide_index=True,
             width="stretch",
-            key=f"{key_prefix}_missing_sku_editor",
+            key=f"{key_prefix}_missing_sku_editor_{reset_cnt}",
         )
 
         c_save1, c_save2 = st.columns([2.5, 1.5], gap="medium")
@@ -513,19 +576,24 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
                     st.warning("⚠️ กรุณากรอกราคาทุนในช่อง 'ราคาทุนต่อหน่วย (บาท)' อย่างน้อย 1 สินค้าก่อนกดบันทึก")
                 else:
                     saved_count = 0
+                    raw_o_df = getattr(res_obj, "raw_orders", None)
                     for _, r in filled_rows.iterrows():
-                        s_code = str(r["รหัส SKU (ระบุรหัสได้ที่นี่ ⭐)"]).strip()
+                        s_val = str(r["รหัส SKU (ระบุรหัสได้ที่นี่ ⭐)"]).strip()
                         p_name = str(r["ชื่อสินค้า"]).strip()
-                        if s_code and s_code not in ("(ไม่ระบุ SKU)", "nan", "None"):
-                            db.upsert_sku_mapping(p_name, s_code)
-                            if not res_obj.order_lines.empty and "Product Name" in res_obj.order_lines.columns:
+                        if s_val and s_val not in ("(ไม่ระบุ SKU)", "nan", "None"):
+                            if p_name:
+                                db.upsert_sku_mapping(p_name, s_val)
+                            if not res_obj.order_lines.empty and "Product Name" in res_obj.order_lines.columns and p_name:
                                 mask_pn = res_obj.order_lines["Product Name"].fillna("").astype(str).str.strip() == p_name
-                                res_obj.order_lines.loc[mask_pn, "Seller SKU"] = s_code
+                                res_obj.order_lines.loc[mask_pn, "Seller SKU"] = s_val
+                            if raw_o_df is not None and not raw_o_df.empty and "Product Name" in raw_o_df.columns and "Seller SKU" in raw_o_df.columns and p_name:
+                                mask_ro = raw_o_df["Product Name"].fillna("").astype(str).str.strip() == p_name
+                                raw_o_df.loc[mask_ro, "Seller SKU"] = s_val
                         else:
-                            s_code = p_name
+                            s_val = p_name
 
                         db.upsert_sku(
-                            sku=s_code,
+                            sku=s_val,
                             name=p_name,
                             category=str(r["หมวดหมู่"]).strip(),
                             unit_cost=float(r["ราคาทุนต่อหน่วย (บาท)"]),
@@ -535,19 +603,20 @@ def _render_missing_skus_editor(res_obj, sku_df, period_name: str, key_prefix: s
 
                     new_sku_df = db.get_skus()
                     updated_res = recalculate_with_skus(res_obj, new_sku_df)
+                    updated_res.shop_code = eff_shop_code
                     st.session_state["result"] = updated_res
-                    st.session_state.pop("_cached_master_excel_bytes", None)
-                    st.session_state.pop("_cached_master_excel_key", None)
+                    for ck in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_page2_rep_xlsx", "_cached_page2_rep_key", "_cached_rep_xlsx", "_cached_rep_key"):
+                        st.session_state.pop(ck, None)
 
-                    s_code = getattr(updated_res, "source", None) or "matang"
                     if is_admin():
-                        _save_period_snapshot(period_name, updated_res, shop_code=s_code)
+                        _save_period_snapshot(period_name, updated_res, shop_code=eff_shop_code)
 
                     st.toast(f"✅ บันทึกข้อมูลสำเร็จ {saved_count} สินค้า และคำนวณกำไรใหม่แล้ว!", icon="🎉")
                     st.rerun()
 
         with c_save2:
             if st.button("🔄 รีเซ็ตตาราง", width="stretch", key=f"{key_prefix}_btn_refresh_sku"):
+                st.session_state[f"{key_prefix}_tbl_reset_cnt"] = reset_cnt + 1
                 st.rerun()
 
 
@@ -615,12 +684,16 @@ with st.container(border=True):
             if is_admin():
                 with st.popover("🗑️ จัดการ / เลือกลบคลังคำสั่งซื้อ", width="stretch"):
                     month_list = repo_info["months"]["เดือนที่สั่งซื้อ"].tolist()
+                    if "sel_del_repo_m" in st.session_state and st.session_state["sel_del_repo_m"] not in month_list:
+                        st.session_state.pop("sel_del_repo_m", None)
                     st.markdown("##### 📌 1. เลือกลบเฉพาะเดือน (ลบทีละงวด)")
                     st.caption("เลือกเดือนที่ต้องการลบออกจากคลัง (เดือนอื่นจะยังอยู่ครบ)")
                     del_m = st.selectbox("เลือกเดือนที่ต้องการลบ:", month_list, key="sel_del_repo_m")
+                    if del_m not in month_list:
+                        del_m = month_list[0]
                     if st.button(f"🗑️ ยืนยันลบเดือน {del_m}", type="primary", key="btn_del_single_repo_m", width="stretch"):
                         cnt = order_repo.delete_month_from_repo(del_m, shop_code=cur_selected_shop_code)
-                        for k in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_rep_key", "_cached_rep_master_xlsx", "_cached_rep_xlsx", "sel_del_repo_m"):
+                        for k in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_rep_key", "_cached_rep_master_xlsx", "_cached_rep_xlsx", "_cached_page2_rep_xlsx", "_cached_page2_rep_key"):
                             st.session_state.pop(k, None)
                         st.toast(f"ลบออเดอร์เดือน {del_m} ออกจากคลังเรียบร้อยแล้ว ({cnt:,} ออเดอร์)", icon="🗑️")
                         st.rerun()
@@ -631,7 +704,7 @@ with st.container(border=True):
                     st.caption("ลบออเดอร์ทุกเดือนทิ้งทั้งหมด (รอบถัดไปต้องใส่ไฟล์ Order 2 ไฟล์ใหม่)")
                     if st.button("ยืนยันล้างคลังทั้งหมด", type="secondary", key="btn_clear_order_repo", width="stretch"):
                         order_repo.clear_repo(shop_code=cur_selected_shop_code)
-                        for k in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_rep_key", "_cached_rep_master_xlsx", "_cached_rep_xlsx", "sel_del_repo_m"):
+                        for k in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_rep_key", "_cached_rep_master_xlsx", "_cached_rep_xlsx", "_cached_page2_rep_xlsx", "_cached_page2_rep_key"):
                             st.session_state.pop(k, None)
                         st.toast("ล้างคลังคำสั่งซื้อสะสมทั้งหมดแล้ว", icon="🗑️")
                         st.rerun()
@@ -892,9 +965,12 @@ with tab_multi_upload:
                             if len(settle_books) >= 2 or (len(settle_books) == 0 and len(usable_books) >= 2):
                                 should_split = True
 
+                    s_code_multi = active_shop_info.get("code") if isinstance(active_shop_info, dict) else cur_selected_shop_code
                     if not should_split:
                         data = combine(books)
-                        result = run_pipeline(data, sku_master)
+                        if not data.raw_orders.empty:
+                            order_repo.save_to_repo(data.raw_orders, shop_code=s_code_multi)
+                        result = run_pipeline(data, sku_master, shop_code=s_code_multi)
                         period = detect_period_label(result, [fn for fn, _ in raw_payloads], shop=active_shop_info)
 
                         for fname, raw_bytes in raw_payloads:
@@ -906,8 +982,7 @@ with tab_multi_upload:
                             )
 
                         if is_admin():
-                            s_code = active_shop_info.get("code") if isinstance(active_shop_info, dict) else "matang"
-                            _save_period_snapshot(period, result, shop_code=s_code)
+                            _save_period_snapshot(period, result, shop_code=s_code_multi)
                             db.set_app_state("active_period", period)
 
                         st.session_state.update(result=result, period=period, raw=data, notes=data.notes)
@@ -917,8 +992,13 @@ with tab_multi_upload:
                         saved_periods = []
                         last_res = None
                         all_notes = []
-                        for fname, raw_bytes, b in zip(raw_payloads, books):
-                            res_i = run_pipeline(b, sku_master)
+                        for (fname, raw_bytes), b in zip(raw_payloads, books):
+                            if not b.raw_orders.empty:
+                                order_repo.save_to_repo(b.raw_orders, shop_code=s_code_multi)
+                            # ถ้าไฟล์นี้มีเฉพาะ settlement แต่ไม่มี orders ให้ยืมออเดอร์รวมจากชุดที่โยนพร้อมกันมาจับคู่
+                            if b.orders.empty and not shared_orders_pool.empty:
+                                b.orders = shared_orders_pool.copy()
+                            res_i = run_pipeline(b, sku_master, shop_code=s_code_multi)
                             p_name = detect_period_label(res_i, fname, shop=active_shop_info)
                             db.save_uploaded_excel(
                                 original_name=fname,
@@ -927,14 +1007,13 @@ with tab_multi_upload:
                                 uploaded_by=user["username"],
                             )
                             if is_admin():
-                                s_code = active_shop_info.get("code") if isinstance(active_shop_info, dict) else "matang"
-                                _save_period_snapshot(p_name, res_i, shop_code=s_code)
+                                _save_period_snapshot(p_name, res_i, shop_code=s_code_multi)
                             saved_periods.append(p_name)
                             all_notes.extend(f"[{fname}] {n}" for n in b.notes)
                             last_res = res_i
 
                         if is_admin() and len(saved_periods) >= 2:
-                            combined_all = load_period_result(ALL_PERIODS_KEY)
+                            combined_all = load_period_result(ALL_PERIODS_KEY, shop_code=s_code_multi)
                             db.set_app_state("active_period", ALL_PERIODS_KEY)
                             st.session_state.update(
                                 result=combined_all if combined_all is not None else last_res,
@@ -942,6 +1021,13 @@ with tab_multi_upload:
                                 notes=all_notes,
                             )
                             st.success(f"✅ แยกบันทึกสำเร็จ **{len(saved_periods)} งวด**: {', '.join(saved_periods)}")
+                            st.rerun()
+                        elif last_res is not None:
+                            target_p = saved_periods[-1]
+                            if is_admin():
+                                db.set_app_state("active_period", target_p)
+                            st.session_state.update(result=last_res, period=target_p, notes=all_notes)
+                            st.success(f"✅ บันทึกสำเร็จ **{len(saved_periods)} งวด**: {', '.join(saved_periods)}")
                             st.rerun()
                 except Exception as e:
                     st.error(f"เกิดข้อผิดพลาด: {e}")
@@ -981,9 +1067,8 @@ if not snapshots.empty:
                 st.rerun()
 
         if is_admin() and col_btn_del.button("🗑️ ลบงวดนี้", type="secondary", width="stretch", key="btn_del_snap"):
-            # ล้างคีย์ widget และแคชทั้งหมดที่อาจค้างอยู่ในหน่วยความจำ
+            # ล้างคีย์ widget ของหน้าอื่นและแคชทั้งหมดที่อาจค้างอยู่ในหน่วยความจำ
             for k in (
-                "active_snapshot_selector",
                 "dash_period_sel",
                 "adv_period_sel",
                 "rep_period_sel",
@@ -993,6 +1078,8 @@ if not snapshots.empty:
                 "_cached_rep_key",
                 "_cached_rep_master_xlsx",
                 "_cached_rep_xlsx",
+                "_cached_page2_rep_xlsx",
+                "_cached_page2_rep_key",
             ):
                 st.session_state.pop(k, None)
 
@@ -1036,6 +1123,12 @@ if not snapshots.empty:
 
 res = st.session_state.get("result")
 
+# ป้องกันผลลัพธ์ของร้านอื่นค้างข้ามมาโดยเด็ดขาด
+if res is not None and getattr(res, "shop_code", "") not in ("", cur_selected_shop_code):
+    res = None
+    for k in ("result", "period", "raw", "notes"):
+        st.session_state.pop(k, None)
+
 # ถ้าระบบมี snapshot บันทึกไว้ของร้านค้านี้ แต่ใน session_state ว่างเปล่า ให้โหลดงวดล่าสุดอัตโนมัติ
 if res is None and not snapshots.empty:
     saved_p = db.get_app_state("active_period")
@@ -1061,13 +1154,10 @@ if res is None:
 cur_period = st.session_state.get("period", "ไม่ทราบงวด")
 sku_master_df = db.get_skus()
 
-# ตรวจสอบและคำนวณต้นทุนใหม่ทันทีถ้าฐานข้อมูล SKU มีการอัปเดตราคา
-if res is not None and not res.missing_skus.empty and not sku_master_df.empty:
-    missing_codes = set(res.missing_skus["sku"].astype(str).str.strip())
-    filled = sku_master_df[sku_master_df["sku"].astype(str).str.strip().isin(missing_codes) & (sku_master_df["unit_cost"] > 0)]
-    if not filled.empty:
-        res = recalculate_with_skus(res, sku_master_df)
-        st.session_state["result"] = res
+# คำนวณต้นทุนใหม่เสมอเมื่อโหลดหน้า เพื่อให้การแก้ไขราคาทุนหรือการจับคู่ SKU จากหน้าอื่นอัปเดตทันที 100%
+res = recalculate_with_skus(res, sku_master_df)
+res.shop_code = cur_selected_shop_code
+st.session_state["result"] = res
 
 orders_df = res.orders
 order_lines_df = res.order_lines
@@ -1075,7 +1165,7 @@ order_lines_df = res.order_lines
 # คำนวณสรุปงวด
 fixed = db.total_fixed_cost(cur_period)
 comm_pct = db.get_comm_pct(cur_period)
-s_metric = summarize_for_period(res, cur_period) if cur_period else summarize(res, fixed_costs=fixed, comm_pct=comm_pct)
+s_metric = summarize_for_period(res, cur_period, shop_code=cur_selected_shop_code) if cur_period else summarize(res, fixed_costs=fixed, comm_pct=comm_pct)
 
 
 # ==============================================================================
@@ -1167,7 +1257,7 @@ if missing_sku_cnt > 0 and not res.missing_skus.empty:
         unsafe_allow_html=True,
     )
     with st.expander(f"✏️ เปิดช่องกรอกราคาทุนสินค้าที่ขาด ({missing_sku_cnt} รายการ) บนหน้าเว็บทันที", expanded=True):
-        _render_missing_skus_editor(res, sku_master_df, cur_period, key_prefix="banner")
+        _render_missing_skus_editor(res, sku_master_df, cur_period, key_prefix="banner", shop_code=cur_selected_shop_code)
 
 # แท็บเลือกดูข้อมูล
 tab_v_settle, tab_v_orders, tab_v_sku, tab_v_withdraw, tab_v_fees = st.tabs(
@@ -1226,9 +1316,9 @@ with tab_v_settle:
         )
 
     settle_display = company_settlement_view(orders_df)
-    col_cogs = "ต้นทุนรวม (G)"
-    col_settle = "ยอดการชำระเงินทั้งหมด (F)"
-    col_profit = "กำไร (H = F - G)"
+    col_cogs = "ต้นทุนรวม"
+    col_settle = "ยอดการชำระเงินทั้งหมด"
+    col_profit = "กำไร"
 
     if filter_profit.startswith("⭐"):
         if col_cogs in settle_display.columns and col_settle in settle_display.columns:
@@ -1293,7 +1383,7 @@ with tab_v_sku:
     st.markdown("##### ⚠️ ตารางราคาทุนสินค้า (SKU Master)")
     if not res.missing_skus.empty:
         st.warning(f"⚠️ พบ **{len(res.missing_skus):,} สินค้า** ที่ยังไม่มีราคาทุนในระบบ (ระบบใช้ต้นทุน 0.0 ชั่วคราว)")
-        _render_missing_skus_editor(res, sku_master_df, cur_period, key_prefix="tab")
+        _render_missing_skus_editor(res, sku_master_df, cur_period, key_prefix="tab", shop_code=cur_selected_shop_code)
     else:
         st.success("✅ สินค้าทุกรหัสในงวดนี้มีราคาทุนครบ 100%")
 
@@ -1381,14 +1471,14 @@ with st.container(border=True):
         custom_cost_name = st.text_input(
             "ชื่อไฟล์ต้นทุนรวมที่ต้องการส่งออก (.xlsx):",
             value=default_cost_filename,
-            key="input_export_cost_filename",
+            key=f"input_export_cost_filename_{cur_selected_shop_code}_{cur_period}",
             help="สามารถแก้ไขชื่อไฟล์ได้ เช่น ต้นทุน2569-09.xlsx หรือ ต้นทุนดีไวน์2569-09.xlsx",
         ).strip()
         if not custom_cost_name.endswith(".xlsx"):
             custom_cost_name += ".xlsx"
 
     # จัดการไฟล์ Excel ต้นทุนรวม (Lazy-load & Cache เพื่อไม่ให้หน้าเว็บค้างหรือช้า)
-    excel_cache_key = f"{cur_period}_{len(res.orders)}_{len(sku_master_df)}"
+    excel_cache_key = f"{cur_selected_shop_code}_{cur_period}_{len(res.orders)}_{len(sku_master_df)}_{round(total_cogs, 2)}"
     has_cached = (
         st.session_state.get("_cached_master_excel_key") == excel_cache_key
         and st.session_state.get("_cached_master_excel_bytes") is not None
@@ -1450,18 +1540,23 @@ with st.container(border=True):
     cat_df = by_category(res)
     sku_df = by_sku(res)
 
-    export_report_sheets = {
-        "รายงานตามโครงสร้าง TikTok": tiktok_report_table(res),
-        "สรุปราย SKU": sku_df,
-        "ตามหมวดหมู่": cat_df,
-        "รายละเอียดคำสั่งซื้อ": company_settlement_view(orders_df),
-        "Order": company_order_lines_view(order_lines_df),
-        "SKU ไม่มีราคาทุน": res.missing_skus,
-    }
-    if not res.withdrawals.empty:
-        export_report_sheets["บันทึกการถอน"] = res.withdrawals
-
-    report_excel_bytes = to_excel(s_metric, export_report_sheets)
+    page2_rep_key = f"{cur_selected_shop_code}_{cur_period}_{len(orders_df)}_{round(s_metric.net_profit, 2)}"
+    if st.session_state.get("_cached_page2_rep_key") != page2_rep_key or st.session_state.get("_cached_page2_rep_xlsx") is None:
+        export_report_sheets = {
+            "รายงานตามโครงสร้าง TikTok": tiktok_report_table(res),
+            "สรุปราย SKU": sku_df,
+            "ตามหมวดหมู่": cat_df,
+            "รายละเอียดคำสั่งซื้อ": company_settlement_view(orders_df),
+            "Order": company_order_lines_view(order_lines_df),
+            "SKU ไม่มีราคาทุน": res.missing_skus,
+        }
+        if not res.withdrawals.empty:
+            export_report_sheets["บันทึกการถอน"] = res.withdrawals
+        report_excel_bytes = to_excel(s_metric, export_report_sheets)
+        st.session_state["_cached_page2_rep_xlsx"] = report_excel_bytes
+        st.session_state["_cached_page2_rep_key"] = page2_rep_key
+    else:
+        report_excel_bytes = st.session_state["_cached_page2_rep_xlsx"]
 
     with r_col1:
         st.download_button(

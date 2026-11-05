@@ -8,7 +8,7 @@ import re
 import pandas as pd
 
 from .loader import FEE_DESCRIPTIONS
-from .metrics import Summary
+from .metrics import Summary, tiktok_report_table
 from .pipeline import ensure_order_columns
 
 ORDER_COL_TH = {
@@ -181,10 +181,15 @@ def format_thai_cost_filename(period_label: str) -> str:
         yr, mo = int(m.group(1)), int(m.group(2))
         if yr < 2500:
             yr += 543
-        extra = ""
         if "ดีไวน์" in clean:
-            extra = "ดีไวน์"
-        return f"ต้นทุน{extra}{yr}-{mo:02d}.xlsx"
+            return f"ต้นทุนดีไวน์{yr}-{mo:02d}.xlsx"
+        tag_m = re.search(r"\(([^)]+)\)", clean)
+        if tag_m:
+            raw_tag = tag_m.group(1).strip()
+            if raw_tag and raw_tag not in ("มาตัง", "matang"):
+                safe_tag = re.sub(r'[\\/:*?"<>|]+', "_", raw_tag).strip()
+                return f"ต้นทุน{safe_tag}_{yr}-{mo:02d}.xlsx"
+        return f"ต้นทุน{yr}-{mo:02d}.xlsx"
 
     clean_slug = re.sub(r'[\/:*?"<>| ]', "_", clean)
     return f"ต้นทุน_{clean_slug}.xlsx"
@@ -302,7 +307,70 @@ def build_company_cost_master_excel(
 
         sku_cost_map = dict(zip(sku_master["sku"].astype(str).str.strip(), sku_master["unit_cost"]))
         if sku_col and sku_col in o_df.columns:
-            seller_skus = o_df[sku_col].astype(str).str.strip()
+            seller_skus = (
+                o_df[sku_col]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .replace({"nan": "", "None": ""})
+            )
+            seller_skus = seller_skus.mask(seller_skus.str.fullmatch(r"\d{10,}"), "")
+
+            # เติม Seller SKU จาก product_sku_mappings และชื่อสินค้าใน sku_master สำหรับรายการที่ TikTok ไม่ได้ส่ง SKU มา
+            if pname_col and pname_col in o_df.columns:
+                clean_pn = o_df[pname_col].fillna("").astype(str).str.strip()
+                try:
+                    from .db import get_sku_mappings
+                    p_mappings = get_sku_mappings()
+                except Exception:
+                    p_mappings = {}
+
+                if p_mappings:
+                    empty_m = seller_skus == ""
+                    if empty_m.any():
+                        mapped_s = clean_pn[empty_m].map(p_mappings)
+                        ok_m = mapped_s.notna() & (mapped_s != "")
+                        if ok_m.any():
+                            seller_skus.loc[mapped_s[ok_m].index] = mapped_s[ok_m]
+
+                valid_m = sku_master[pd.to_numeric(sku_master["unit_cost"], errors="coerce").fillna(0.0) > 0].dropna(subset=["name"]).copy()
+                if not valid_m.empty and (seller_skus == "").any():
+                    name_to_sku = dict(zip(valid_m["name"].astype(str).str.strip(), valid_m["sku"].astype(str).str.strip()))
+                    empty_m2 = seller_skus == ""
+                    exact_s = clean_pn[empty_m2].map(name_to_sku)
+                    ok_e = exact_s.notna() & (exact_s != "")
+                    if ok_e.any():
+                        seller_skus.loc[exact_s[ok_e].index] = exact_s[ok_e]
+
+                    if (seller_skus == "").any():
+                        def _norm_exp_pname(s: str) -> str:
+                            s = str(s).strip()
+                            s = re.sub(r"#\d+", "", s)
+                            s = re.sub(r"\(GMV\)", "", s, flags=re.I)
+                            s = re.sub(r"\(ชุดที่\s*\d+\)", "", s)
+                            s = re.sub(r"โปร[^\s]+", "", s)
+                            s = re.sub(r"\+?\s*\d+\.\d+", "", s)
+                            s = re.sub(r"ลดสุดใจ", "", s)
+                            s = re.sub(r"วันเงินออก", "", s)
+                            s = re.sub(r"ใหม่ล่าสุด", "", s)
+                            s = re.sub(r"ด่วน", "", s)
+                            s = re.sub(r"สูตร\s*\d+", "", s)
+                            s = re.sub(r"ขนาด\s*\d+(?:\.\d+)?\s*(?:กรัม|ml|มล\.?|g)", "", s, flags=re.I)
+                            s = re.sub(r"\s+", " ", s)
+                            return s.strip()
+
+                        norm_m_sku: dict[str, str] = {}
+                        for _, mr in valid_m.iterrows():
+                            nm = _norm_exp_pname(mr["name"])
+                            if nm and nm not in norm_m_sku:
+                                norm_m_sku[nm] = str(mr["sku"]).strip()
+                        empty_m3 = seller_skus == ""
+                        norm_s = clean_pn[empty_m3].apply(_norm_exp_pname).map(norm_m_sku)
+                        ok_n = norm_s.notna() & (norm_s != "")
+                        if ok_n.any():
+                            seller_skus.loc[norm_s[ok_n].index] = norm_s[ok_n]
+
+            o_df[sku_col] = seller_skus
             unit_costs = pd.to_numeric(seller_skus.map(sku_cost_map), errors="coerce").fillna(0.0)
         else:
             unit_costs = pd.Series(0.0, index=o_df.index)

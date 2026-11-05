@@ -27,6 +27,7 @@ from core.metrics import (
 from core.pipeline import ALL_PERIODS_KEY
 from core.ui import (
     build_saved_periods_comparison_df,
+    get_current_shop,
     render_page_header,
     render_period_selector,
     render_section_header,
@@ -38,10 +39,12 @@ from core.ui import (
 require_login(admin_only=True)
 res = require_result()
 period = st.session_state.get("period", "")
+cur_shop = get_current_shop()
 
-render_page_header("รายงานตามโครงสร้าง TikTok Shop และดาวน์โหลดไฟล์", period=period)
+render_page_header("รายงานตามโครงสร้าง TikTok Shop และดาวน์โหลดไฟล์", period=period, shop=cur_shop)
 period = render_period_selector(key="rep_period_sel")
-s = summarize_for_period(res, period)
+res = st.session_state.get("result") or res
+s = summarize_for_period(res, period, shop_code=cur_shop["code"])
 
 cat = by_category(res)
 sku = by_sku(res)
@@ -49,7 +52,7 @@ anom = detect_anomalies(res)
 tt_rep = tiktok_report_table(res)
 settle_company = company_settlement_view(res.orders)
 orders_company = company_order_lines_view(res.order_lines)
-comp_df = build_saved_periods_comparison_df()
+comp_df = build_saved_periods_comparison_df(shop_code=cur_shop["code"])
 file_tag = "รวมทุกงวด" if period == ALL_PERIODS_KEY else period
 
 with st.container(border=True):
@@ -71,13 +74,13 @@ with st.container(border=True):
         export_sheets["บันทึกการถอน"] = res.withdrawals
 
     sku_master_df = db.get_skus()
-    excel_cache_key = f"{period}_{len(res.orders)}_{len(sku_master_df)}"
+    excel_cache_key = f"{cur_shop['code']}_{period}_{len(res.orders)}_{len(sku_master_df)}_{round(s.cogs, 2)}"
     has_cached_master = (
         st.session_state.get("_cached_master_excel_key") == excel_cache_key
         and st.session_state.get("_cached_master_excel_bytes") is not None
     )
 
-    rep_cache_key = f"rep_{period}_{len(res.orders)}"
+    rep_cache_key = f"rep_{cur_shop['code']}_{period}_{len(res.orders)}_{round(s.net_profit, 2)}"
     if st.session_state.get("_cached_rep_key") != rep_cache_key:
         xlsx = to_excel(s, export_sheets)
         st.session_state["_cached_rep_xlsx"] = xlsx

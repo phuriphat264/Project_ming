@@ -188,25 +188,60 @@ button[kind="secondary"]:hover, [data-testid="baseButton-secondary"]:hover {
     box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2) !important;
 }
 
-/* 6.1 ตกแต่ง Selectbox ไม่ให้เป็นกล่องดำ */
-.stSelectbox div[data-baseweb="select"], .stSelectbox div[data-baseweb="select"] > div {
+/* 6.1 ตกแต่ง Selectbox, NumberInput และ Code ไม่ให้เป็นกล่องดำบนทุกเบราว์เซอร์ */
+.stSelectbox div[data-baseweb="select"],
+.stSelectbox div[data-baseweb="select"] > div,
+[data-testid="stSelectbox"] div[data-baseweb="select"],
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+[data-testid="stMultiSelect"] div[data-baseweb="select"],
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div {
     background-color: #ffffff !important;
     border: 1px solid #cbd5e1 !important;
     color: #0f172a !important;
     border-radius: 12px !important;
 }
 
-.stSelectbox div[data-baseweb="select"] span, .stSelectbox div[data-baseweb="select"] input {
+.stSelectbox div[data-baseweb="select"] span,
+.stSelectbox div[data-baseweb="select"] input,
+[data-testid="stSelectbox"] div[data-baseweb="select"] *,
+[data-testid="stMultiSelect"] div[data-baseweb="select"] * {
     color: #0f172a !important;
     font-weight: 600 !important;
 }
 
-.stSelectbox div[data-baseweb="select"] svg {
+.stSelectbox div[data-baseweb="select"] svg,
+[data-testid="stSelectbox"] div[data-baseweb="select"] svg {
     fill: #475569 !important;
 }
 
+[data-testid="stNumberInput"] button {
+    background-color: #f1f5f9 !important;
+    color: #0f172a !important;
+    border-color: #cbd5e1 !important;
+}
+
+[data-testid="stMarkdownContainer"] code {
+    background-color: #eef2ff !important;
+    color: #3730a3 !important;
+    padding: 2px 7px !important;
+    border-radius: 6px !important;
+    font-weight: 600 !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] code {
+    background-color: rgba(0, 0, 0, 0.35) !important;
+    color: #fbcfe8 !important;
+}
+
+[data-testid="stSidebar"] label p,
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
+    color: #e2e8f0 !important;
+}
+
 [data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"],
-[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] > div {
+[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] > div,
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"],
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
     background-color: rgba(30, 27, 75, 0.95) !important;
     border: 1px solid #4338ca !important;
     color: #ffffff !important;
@@ -214,12 +249,14 @@ button[kind="secondary"]:hover, [data-testid="baseButton-secondary"]:hover {
 }
 
 [data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] span,
-[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] input {
+[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] input,
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] * {
     color: #ffffff !important;
     font-weight: 600 !important;
 }
 
-[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] svg {
+[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] svg,
+[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] svg {
     fill: #c7d2fe !important;
 }
 
@@ -302,7 +339,6 @@ def set_current_shop(code: str) -> None:
     """กำหนดรหัสร้านค้าที่กำลังเลือกใช้งานอยู่ และสลับข้อมูลงวดให้อัตโนมัติ (แยกข้อมูลตามร้านค้า 100%)"""
     old_code = st.session_state.get("active_shop_code")
     st.session_state["active_shop_code"] = code
-    st.session_state["global_upload_shop_select"] = code
 
     if old_code != code:
         # สลับข้อมูลงวดและผลลัพธ์ไปยังร้านค้าที่เลือกทันที
@@ -310,8 +346,10 @@ def set_current_shop(code: str) -> None:
         for k in (
             "result", "period", "raw", "notes",
             "_cached_master_excel_bytes", "_cached_master_excel_key",
-            "_cached_rep_xlsx", "_cached_rep_key",
+            "_cached_rep_xlsx", "_cached_rep_key", "_cached_rep_master_xlsx",
+            "_cached_page2_rep_xlsx", "_cached_page2_rep_key",
             "dash_period_sel", "global_period_sel", "adv_period_sel", "rep_period_sel",
+            "active_snapshot_selector",
         ):
             st.session_state.pop(k, None)
 
@@ -581,8 +619,10 @@ def require_login(admin_only: bool = False) -> dict:
         )
 
         if len(all_act_shops) > 1:
-            if "sidebar_active_shop_dropdown" not in st.session_state or st.session_state["sidebar_active_shop_dropdown"] not in s_codes:
+            if c_shop["code"] in s_codes:
                 st.session_state["sidebar_active_shop_dropdown"] = c_shop["code"]
+            elif "sidebar_active_shop_dropdown" not in st.session_state or st.session_state["sidebar_active_shop_dropdown"] not in s_codes:
+                st.session_state["sidebar_active_shop_dropdown"] = s_codes[0]
 
             def _on_sidebar_shop_change():
                 sel = st.session_state.get("sidebar_active_shop_dropdown")
@@ -636,6 +676,7 @@ def _snapshot_to_pipeline_result(loaded: dict):
         withdrawals=loaded.get("withdrawals", pd.DataFrame()),
         raw_settlement=loaded.get("raw_settlement", pd.DataFrame()),
         raw_orders=loaded.get("raw_orders", pd.DataFrame()),
+        shop_code=str(loaded.get("shop_code") or ""),
     )
 
 
@@ -667,7 +708,10 @@ def load_period_result(period: str, shop_code: str | None = None):
                 loaded_list.append(_snapshot_to_pipeline_result(ld))
         if not loaded_list:
             return None
-        return combine_pipeline_results(loaded_list, sku_master)
+        combined = combine_pipeline_results(loaded_list, sku_master)
+        if shop_code and shop_code != "all":
+            combined.shop_code = shop_code
+        return combined
 
     loaded = db.load_snapshot(period, shop_code=shop_code)
     if not loaded:
@@ -753,7 +797,11 @@ def build_saved_periods_comparison_df(shop_code: str | None = None):
         return pd.DataFrame()
 
     sku_master = db.get_skus()
-    cache_sig = f"{shop_code}_{','.join(snaps['month'].tolist())}_{len(sku_master)}"
+    sku_cost_sum = round(float(sku_master["unit_cost"].sum()), 2) if not sku_master.empty else 0.0
+    mappings_cnt = len(db.get_sku_mappings())
+    months_list = snaps["month"].tolist()
+    fc_sig = ",".join(f"{db.total_fixed_cost(m):.2f}:{db.get_comm_pct(m):.2f}" for m in months_list)
+    cache_sig = f"{shop_code}_{','.join(months_list)}_{len(sku_master)}_{sku_cost_sum}_{mappings_cnt}_{fc_sig}"
     if _COMP_DF_CACHE is not None and _COMP_DF_CACHE[0] == cache_sig:
         return _COMP_DF_CACHE[1].copy()
 
@@ -908,7 +956,7 @@ def require_result():
     # 1. กรณีร้านที่เลือกยังไม่มี snapshot ในฐานข้อมูลเลย
     if snaps.empty:
         # ถ้ามีผลการคำนวณสดในหน่วยความจำที่ตรงกับร้านนี้ ให้ใช้งานต่อได้
-        if res is not None and getattr(res, "source", None) == shop_code:
+        if res is not None and getattr(res, "shop_code", None) == shop_code:
             res = recalculate_with_skus(res, db.get_skus())
             st.session_state["result"] = res
             return res
@@ -921,6 +969,8 @@ def require_result():
 
     # 2. ตรวจสอบว่างวดปัจจุบันยังถูกต้องและเป็นของร้านนี้หรือไม่
     is_foreign_period = False
+    if res is not None and getattr(res, "shop_code", "") not in ("", shop_code):
+        is_foreign_period = True
     if cur_period and cur_period != ALL_PERIODS_KEY:
         ld = db.load_snapshot(cur_period)
         if ld and ld.get("shop_code") != shop_code:

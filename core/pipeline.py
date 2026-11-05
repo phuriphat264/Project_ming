@@ -115,6 +115,7 @@ class PipelineResult:
     raw_settlement: pd.DataFrame = field(default_factory=pd.DataFrame)
     raw_orders: pd.DataFrame = field(default_factory=pd.DataFrame)
     extra_sheets: dict[str, pd.DataFrame] = field(default_factory=dict)
+    shop_code: str = ""
 
 
 def combine(workbooks: list[LoadedWorkbook]) -> LoadedWorkbook:
@@ -536,7 +537,7 @@ def build_order_row_keys(o: pd.DataFrame) -> list[tuple]:
     return keys
 
 
-def run_pipeline(data: LoadedWorkbook, sku_master: pd.DataFrame) -> PipelineResult:
+def run_pipeline(data: LoadedWorkbook, sku_master: pd.DataFrame, shop_code: str = "") -> PipelineResult:
     warnings: list[str] = []
     eff_master = sku_master if (sku_master is not None and not sku_master.empty) else extract_order_skus(data.orders)
     lines = build_order_lines(data.orders, eff_master)
@@ -704,6 +705,7 @@ def run_pipeline(data: LoadedWorkbook, sku_master: pd.DataFrame) -> PipelineResu
         raw_settlement=data.raw_settlement,
         raw_orders=data.raw_orders,
         extra_sheets=data.extra_sheets,
+        shop_code=shop_code,
     )
 
 
@@ -723,6 +725,7 @@ def recalculate_with_skus(res: PipelineResult, sku_master: pd.DataFrame) -> Pipe
             raw_settlement=res.raw_settlement,
             raw_orders=res.raw_orders,
             extra_sheets=res.extra_sheets,
+            shop_code=res.shop_code,
         )
 
     derived_cols = [
@@ -766,7 +769,36 @@ def recalculate_with_skus(res: PipelineResult, sku_master: pd.DataFrame) -> Pipe
         raw_settlement=res.raw_settlement,
         raw_orders=res.raw_orders,
         extra_sheets=res.extra_sheets,
+        shop_code=res.shop_code,
     )
+
+
+def _format_shop_period(base_period: str, s_code: str, s_name: str) -> str:
+    """สร้างชื่องวดประจำช่องทางโดยไม่ชนกับร้านหลักหรือช่องย่อยอื่น และรักษาความเข้ากันได้กับงวดเดิมในฐานข้อมูล"""
+    sc = str(s_code or "").strip().lower()
+    if sc == "matang":
+        return base_period
+
+    if base_period and sc:
+        try:
+            from core import db
+            snaps = db.list_snapshots(shop_code=sc)
+            if not snaps.empty:
+                existing = [
+                    str(m)
+                    for m in snaps["month"].tolist()
+                    if str(m).startswith(base_period) and "(รวม)" not in str(m)
+                ]
+                if len(existing) == 1:
+                    return existing[0]
+        except Exception:
+            pass
+
+    no_paren = re.sub(r"\([^)]*\)", "", str(s_name or "")).strip(" ()[]")
+    clean_tag = no_paren if no_paren else sc
+    if not clean_tag or clean_tag.lower() == "matang":
+        clean_tag = sc or "subshop"
+    return f"{base_period} ({clean_tag})"
 
 
 def detect_period_label(
@@ -786,10 +818,7 @@ def detect_period_label(
     if shop:
         s_code = shop.get("code") if isinstance(shop, dict) else str(shop).lower()
         s_name = shop.get("name") if isinstance(shop, dict) else str(shop)
-        clean_tag = s_name.split()[0].strip("()[]")
-        if s_code == "matang" or clean_tag in ("มาตัง", "matang"):
-            return base_period
-        return f"{base_period} ({clean_tag})"
+        return _format_shop_period(base_period, str(s_code or ""), str(s_name or ""))
 
     # 2. ตรวจจับจากรายชื่อไฟล์
     names_list = [filenames] if isinstance(filenames, str) else list(filenames)
@@ -799,10 +828,7 @@ def detect_period_label(
         from core import db
         detected = db.detect_shop_from_text(fnames_joined)
         if detected:
-            clean_tag = detected["name"].split()[0].strip("()[]")
-            if detected["code"] == "matang" or clean_tag in ("มาตัง", "matang"):
-                return base_period
-            return f"{base_period} ({clean_tag})"
+            return _format_shop_period(base_period, detected["code"], detected["name"])
     except Exception:
         pass
 
@@ -921,6 +947,8 @@ def combine_pipeline_results(results: list[PipelineResult], sku_master: pd.DataF
     all_wds = pd.concat(wd_list, ignore_index=True).drop_duplicates().reset_index(drop=True) if wd_list else pd.DataFrame()
 
     src = "settlement" if any(r.source == "settlement" for r in results) else "orders_only"
+    shop_codes = {r.shop_code for r in results if getattr(r, "shop_code", "")}
+    common_shop = next(iter(shop_codes)) if len(shop_codes) == 1 else ""
     combined = PipelineResult(
         orders=all_orders,
         order_lines=all_lines,
@@ -930,6 +958,7 @@ def combine_pipeline_results(results: list[PipelineResult], sku_master: pd.DataF
         warnings=[],
         fee_details=merged_fd,
         withdrawals=all_wds,
+        shop_code=common_shop,
     )
     return recalculate_with_skus(combined, sku_master)
 
@@ -997,4 +1026,5 @@ def filter_result_by_month(res: PipelineResult, ym: str) -> PipelineResult:
         warnings=res.warnings,
         fee_details=sub_fd,
         withdrawals=sub_wd,
+        shop_code=res.shop_code,
     )

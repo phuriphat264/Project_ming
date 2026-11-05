@@ -362,9 +362,15 @@ def by_sku(result: PipelineResult) -> pd.DataFrame:
     )
     sold["_alloc_payout"] = sold["_ord_payout"].where(sold["_ord_payout"].notna(), sold["_eff_sales"]) * share
 
+    clean_sku = sold["Seller SKU"].fillna("").astype(str).str.strip().replace({"nan": "", "None": ""})
+    clean_pname = sold["product_name"].fillna("").astype(str).str.strip()
+    sold["_sku_disp"] = clean_sku.where(clean_sku != "", "(ไม่ระบุ SKU)")
+    sold["_sku_grp"] = clean_sku.where(clean_sku != "", "__NOSKU__::" + clean_pname)
+
     g = (
-        sold.groupby("Seller SKU")
+        sold.groupby("_sku_grp", dropna=False)
         .agg(
+            sku=("_sku_disp", "first"),
             name=("product_name", "first"),
             category=("category", "first"),
             unit_cost=("unit_cost", "first"),
@@ -374,10 +380,10 @@ def by_sku(result: PipelineResult) -> pd.DataFrame:
             payout=("_alloc_payout", "sum"),
             cogs=("line_cost", "sum"),
         )
-        .reset_index()
+        .reset_index(drop=True)
         .rename(
             columns={
-                "Seller SKU": "SKU",
+                "sku": "SKU",
                 "name": "ชื่อสินค้า",
                 "category": "หมวดหมู่",
                 "unit_cost": "ราคาทุน/หน่วย",

@@ -152,6 +152,28 @@ def init_db(db_path: Path | None = None) -> None:
                 ("dwine", "ดีไวน์ (Dwine)", "@dwine_thailand", 0, 1, now_str),
             )
 
+        # ซ่อมแซม snapshot ที่อาจเคยถูกบันทึก shop_code ผิดเป็น 'settlement'/'orders_only' หรือเผลอบันทึกแถวสรุปรวมทุกงวด
+        c.execute("DELETE FROM monthly_snapshots WHERE month LIKE '%สรุปรวมทุกงวด%'")
+        valid_shops = c.execute("SELECT code, name FROM shops").fetchall()
+        valid_codes = {r[0] for r in valid_shops}
+        bad_snaps = c.execute(
+            "SELECT month, shop_code FROM monthly_snapshots WHERE shop_code IS NULL OR shop_code IN ('', 'settlement', 'orders_only')"
+        ).fetchall()
+        for m_lbl, _ in bad_snaps:
+            m_str = str(m_lbl or "")
+            repaired_code = "matang"
+            if "ดีไวน์" in m_str and "dwine" in valid_codes:
+                repaired_code = "dwine"
+            elif "(" in m_str and ")" in m_str:
+                tag_part = m_str.split("(", 1)[1].rsplit(")", 1)[0].strip().lower()
+                for sc, sname in valid_shops:
+                    sn_low = str(sname).lower()
+                    sn_first = sn_low.split()[0].strip("()[]") if sn_low.split() else ""
+                    if tag_part and (tag_part == sc.lower() or tag_part in sn_low or (sn_first and tag_part == sn_first)):
+                        repaired_code = sc
+                        break
+            c.execute("UPDATE monthly_snapshots SET shop_code = ? WHERE month = ?", (repaired_code, m_lbl))
+
         # บัญชีเริ่มต้น (ควรเปลี่ยนรหัสผ่านหลังติดตั้ง)
         if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             for user, pw, role, display in (
@@ -231,7 +253,8 @@ def upsert_shop(
     is_active: bool = True,
     db_path: Path | None = None,
 ) -> None:
-    code = code.strip().lower()
+    import re
+    code = re.sub(r'[\\/:*?"<>|\s]+', "_", code.strip().lower()).strip("_")
     name = name.strip()
     if not code or not name:
         return

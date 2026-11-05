@@ -6,11 +6,12 @@ from core.reloader import ensure_fresh
 
 ensure_fresh()
 
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 
 from core import db
-from core.ui import render_page_header, render_section_header, require_login
+from core.ui import render_page_header, render_section_header, require_login, set_current_shop
 
 me = require_login(admin_only=True)
 
@@ -50,30 +51,38 @@ with tab_shops:
             st.markdown("###### ⚡ ทางลัดจัดการร้านค้าอย่างรวดเร็ว:")
             col_quick_sel, col_quick_edit, col_quick_star = st.columns([1.5, 1, 1])
             all_codes = [s["code"] for s in shops_all]
+            if "quick_shop_select_code" in st.session_state and st.session_state["quick_shop_select_code"] not in all_codes:
+                st.session_state["quick_shop_select_code"] = all_codes[0]
             quick_code = col_quick_sel.selectbox("เลือกร้านค้า:", options=all_codes, key="quick_shop_select_code")
             if col_quick_edit.button("✏️ แก้ไขร้านนี้", width="stretch", key="btn_quick_edit"):
-                st.session_state["shop_mgmt_mode"] = "✏️ แก้ไขร้านค้าที่มีอยู่"
-                st.session_state["editing_shop_code"] = quick_code
+                st.session_state["_pending_shop_edit_code"] = quick_code
                 st.rerun()
 
             curr_shop = next((s for s in shops_all if s["code"] == quick_code), None)
             is_already_def = curr_shop["is_default"] if curr_shop else False
             if col_quick_star.button("⭐ ตั้งเป็นร้านหลัก", width="stretch", disabled=is_already_def, key="btn_quick_star", help="ตั้งร้านนี้เป็นช่องทางเริ่มต้นของระบบ"):
                 if curr_shop:
-                    db.upsert_shop(curr_shop["code"], curr_shop["name"], curr_shop["tiktok_handle"], is_default=True, is_active=curr_shop["is_active"])
+                    db.upsert_shop(curr_shop["code"], curr_shop["name"], curr_shop["tiktok_handle"], is_default=True, is_active=True)
+                    set_current_shop(curr_shop["code"])
                     st.toast(f"ตั้ง {curr_shop['name']} เป็นร้านหลักแล้ว", icon="⭐")
                     st.rerun()
 
     with c_s_form:
         with st.container(border=True):
+            pending_mode = st.session_state.pop("_pending_shop_mgmt_mode", None)
+            if pending_mode:
+                st.session_state["radio_shop_mgmt_mode"] = pending_mode
+            pending_edit_code = st.session_state.pop("_pending_shop_edit_code", None)
+            if pending_edit_code:
+                st.session_state["radio_shop_mgmt_mode"] = "✏️ แก้ไขร้านค้าที่มีอยู่"
+                st.session_state["sel_shop_to_edit"] = pending_edit_code
+
             mode = st.radio(
                 "การทำงาน:",
                 ["➕ เพิ่มร้านค้าใหม่", "✏️ แก้ไขร้านค้าที่มีอยู่"],
-                index=1 if st.session_state.get("shop_mgmt_mode") == "✏️ แก้ไขร้านค้าที่มีอยู่" else 0,
                 horizontal=True,
                 key="radio_shop_mgmt_mode",
             )
-            st.session_state["shop_mgmt_mode"] = mode
 
             if mode == "➕ เพิ่มร้านค้าใหม่":
                 render_section_header("เพิ่มช่องทาง TikTok ใหม่", icon="➕")
@@ -91,16 +100,17 @@ with tab_shops:
                             st.error(f"⚠️ รหัสร้าน '{s_code}' มีอยู่ในระบบแล้ว กรุณาใช้โหมดแก้ไขหรือเลือกรหัสอื่น")
                         else:
                             db.upsert_shop(s_code, s_name, s_handle, is_default=s_def, is_active=s_act)
+                            if s_def and s_act:
+                                set_current_shop(db.get_default_shop()["code"])
                             st.success(f"เพิ่มช่องทาง {s_name} ({s_code}) เรียบร้อยแล้ว!")
                             st.rerun()
 
             else:
                 render_section_header("แก้ไข / ลบข้อมูลช่องทาง TikTok", icon="✏️")
                 all_codes = [s["code"] for s in shops_all]
-                pre_sel = st.session_state.get("editing_shop_code")
-                sel_idx = all_codes.index(pre_sel) if pre_sel in all_codes else 0
-                edit_code = st.selectbox("เลือกร้านค้าที่ต้องการแก้ไข:", options=all_codes, index=sel_idx, key="sel_shop_to_edit")
-                st.session_state["editing_shop_code"] = edit_code
+                if "sel_shop_to_edit" not in st.session_state or st.session_state["sel_shop_to_edit"] not in all_codes:
+                    st.session_state["sel_shop_to_edit"] = all_codes[0]
+                edit_code = st.selectbox("เลือกร้านค้าที่ต้องการแก้ไข:", options=all_codes, key="sel_shop_to_edit")
                 shop_data = next((s for s in shops_all if s["code"] == edit_code), shops_all[0])
 
                 with st.form("form_edit_shop"):
@@ -121,16 +131,15 @@ with tab_shops:
                             st.error("⚠️ กรุณาระบุชื่อร้าน")
                         else:
                             db.upsert_shop(shop_data["code"], e_name, e_handle, is_default=e_def, is_active=e_act)
-                            if e_def:
-                                st.session_state["active_shop_code"] = shop_data["code"]
-                                st.session_state["sidebar_active_shop_dropdown"] = shop_data["code"]
-                                st.session_state["global_upload_shop_select"] = shop_data["code"]
+                            if not e_act and st.session_state.get("active_shop_code") == shop_data["code"]:
+                                set_current_shop(db.get_default_shop()["code"])
+                            elif e_def and e_act:
+                                set_current_shop(shop_data["code"])
                             st.success(f"อัปเดตข้อมูลร้าน {e_name} สำเร็จแล้ว!")
                             st.rerun()
 
                     if btn_cancel:
-                        st.session_state["shop_mgmt_mode"] = "➕ เพิ่มร้านค้าใหม่"
-                        st.session_state.pop("editing_shop_code", None)
+                        st.session_state["_pending_shop_mgmt_mode"] = "➕ เพิ่มร้านค้าใหม่"
                         st.rerun()
 
                 # ปุ่มลบแยกออกมาพร้อมยืนยันความปลอดภัย
@@ -147,12 +156,9 @@ with tab_shops:
                         if st.button(f"ยืนยันการลบช่องทาง {shop_data['code']}", type="secondary", width="stretch", key=f"btn_del_shop_{shop_data['code']}"):
                             if db.delete_shop(shop_data["code"]):
                                 if st.session_state.get("active_shop_code") == shop_data["code"]:
-                                    st.session_state.pop("active_shop_code", None)
-                                    st.session_state.pop("global_upload_shop_select", None)
-                                    st.session_state.pop("sidebar_active_shop_dropdown", None)
+                                    set_current_shop(db.get_default_shop()["code"])
                                 st.success(f"ลบช่องทาง {shop_data['name']} เรียบร้อยแล้ว")
-                                st.session_state["shop_mgmt_mode"] = "➕ เพิ่มร้านค้าใหม่"
-                                st.session_state.pop("editing_shop_code", None)
+                                st.session_state["_pending_shop_mgmt_mode"] = "➕ เพิ่มร้านค้าใหม่"
                                 st.rerun()
                             else:
                                 st.error("ไม่สามารถลบช่องทางนี้ได้ กรุณาตรวจสอบว่าไม่ได้เป็นร้านหลัก")
@@ -212,16 +218,21 @@ with tab_backup:
         with b_col1:
             st.markdown("##### 📦 1. ดาวน์โหลดไฟล์สำรองข้อมูลทั้งหมด")
             st.write("รวมฐานข้อมูล (`app.db`), ช่องทางร้านค้า, ประวัติผลการคำนวณ (`snapshots`) และไฟล์ Excel ทั้งหมด")
-            backup_bytes = db.create_backup_zip_bytes()
-            from datetime import datetime
-            st.download_button(
-                "⬇️ ดาวน์โหลด Backup ทั้งระบบ (.zip)",
-                backup_bytes,
-                file_name=f"Backup_Matang_Cosmetic_{datetime.now():%Y%m%d_%H%M%S}.zip",
-                mime="application/zip",
-                type="primary",
-                width="stretch",
-            )
+            if st.button("⚡ เตรียมไฟล์สำรองข้อมูลทั้งระบบ (.zip)", type="primary", width="stretch", key="btn_prep_backup_zip"):
+                with st.spinner("กำลังบีบอัดฐานข้อมูลและไฟล์ทั้งหมดเป็น .zip..."):
+                    st.session_state["_cached_backup_zip_bytes"] = db.create_backup_zip_bytes()
+                    st.session_state["_cached_backup_zip_ts"] = f"{datetime.now():%Y%m%d_%H%M%S}"
+            if st.session_state.get("_cached_backup_zip_bytes") is not None:
+                ts_lbl = st.session_state.get("_cached_backup_zip_ts", f"{datetime.now():%Y%m%d_%H%M%S}")
+                st.download_button(
+                    "⬇️ ดาวน์โหลด Backup ทั้งระบบ (.zip)",
+                    st.session_state["_cached_backup_zip_bytes"],
+                    file_name=f"Backup_Matang_Cosmetic_{ts_lbl}.zip",
+                    mime="application/zip",
+                    type="primary",
+                    width="stretch",
+                    key="btn_dl_backup_zip",
+                )
 
         with b_col2:
             st.markdown("##### 🔄 2. กู้คืนข้อมูลจากไฟล์สำรอง")

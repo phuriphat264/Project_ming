@@ -29,6 +29,7 @@ period = st.session_state.get("period", "")
 
 render_page_header("จำลองราคาและตรวจจับคำสั่งซื้อขาดทุน", period=period)
 period = render_period_selector(key="adv_period_sel")
+res = st.session_state.get("result") or res
 base = summarize_for_period(res, period)
 
 tab_sim, tab_anom = st.tabs(["🎛️ จำลองการปรับราคา / ต้นทุน", "🚨 ตรวจจับคำสั่งซื้อที่ขาดทุน"])
