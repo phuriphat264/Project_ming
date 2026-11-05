@@ -309,9 +309,14 @@ def init_page(title: str, icon: str = "📊") -> None:
     st.markdown(APP_THEME_CSS, unsafe_allow_html=True)
     with st.sidebar:
         st.markdown(APP_THEME_CSS, unsafe_allow_html=True)
-    if not st.session_state.get("_db_inited"):
+    if not st.session_state.get("_db_inited_v3"):
         db.init_db()
-        st.session_state["_db_inited"] = True
+        try:
+            from . import order_repo
+            order_repo.ensure_repo_migrated()
+        except Exception:
+            pass
+        st.session_state["_db_inited_v3"] = True
     if st.session_state.get("_reset_v") != 7:
         for k in ("result", "period", "raw", "notes"):
             st.session_state.pop(k, None)

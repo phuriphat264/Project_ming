@@ -120,7 +120,7 @@ def test_4_backup_and_restore():
         names = z.namelist()
         print(f"  ✓ Backup zip verified ({len(backup_bytes)/1024:.1f} KB), contains: {names[:5]}...")
         assert "app.db" in names, "app.db must be in backup"
-        assert any("orders_raw.parquet" in n for n in names), "orders_raw.parquet must be in backup"
+        assert any("orders_raw" in n and n.endswith(".parquet") for n in names), "per-shop orders_raw parquet must be in backup"
 
 def test_5_ui_component_metrics():
     print("--- Test 5: Metrics & Calculations Check ---")
@@ -203,6 +203,72 @@ def test_7_missing_sku_detection_and_recalc():
     db.delete_sku("MISSING_TEST_SKU_88")
     print("  ✓ Missing SKU detection, orders_count tracking, and instant recalculation verified!")
 
+
+def test_8_multi_channel_repo_isolation_and_recovery():
+    print("--- Test 8: Multi-Channel Order Repo Isolation & Auto-Recovery ---")
+    import tempfile
+    import pandas as pd
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        t_db = Path(tmpdir) / "data" / "app.db"
+        db.init_db(t_db)
+        db.upsert_shop("1-tiktok", "1-Tiktok ช่องBUNGTEE", tiktok_handle="@BUNGTEE", db_path=t_db)
+
+        raw_matang = pd.DataFrame({
+            "Order ID": ["1000001", "1000002"],
+            "Seller SKU": ["SKU_M1", "SKU_M2"],
+            "Product Name": ["สินค้ามาตัง 1", "สินค้ามาตัง 2"],
+            "Quantity": ["1", "2"],
+            "Created Time": ["01/03/2026 10:00:00", "02/03/2026 11:00:00"],
+        })
+        raw_bungtee = pd.DataFrame({
+            "Order ID": ["9000001", "9000002", "9000003"],
+            "Seller SKU": ["SKU_B1", "SKU_B2", "SKU_B3"],
+            "Product Name": ["สินค้าบังตี๋ 1", "สินค้าบังตี๋ 2", "สินค้าบังตี๋ 3"],
+            "Quantity": ["1", "1", "5"],
+            "Created Time": ["15/02/2026 09:00:00", "10/03/2026 14:00:00", "11/03/2026 15:00:00"],
+        })
+
+        # 1. Test strict isolation: saving and clearing Matang MUST NOT affect BUNGTEE
+        order_repo.save_to_repo(raw_matang, db_path=t_db, shop_code="matang")
+        order_repo.save_to_repo(raw_bungtee, db_path=t_db, shop_code="1-tiktok")
+        assert order_repo.repo_summary(db_path=t_db, shop_code="matang")["orders"] == 2
+        assert order_repo.repo_summary(db_path=t_db, shop_code="1-tiktok")["orders"] == 3
+
+        order_repo.delete_month_from_repo("2026-03", db_path=t_db, shop_code="matang")
+        assert order_repo.repo_summary(db_path=t_db, shop_code="matang")["orders"] == 0
+        assert order_repo.repo_summary(db_path=t_db, shop_code="1-tiktok")["orders"] == 3, "Deleting Matang month must NOT affect BUNGTEE!"
+
+        order_repo.save_to_repo(raw_matang, db_path=t_db, shop_code="matang")
+        order_repo.clear_repo(db_path=t_db, shop_code="matang")
+        assert order_repo.repo_summary(db_path=t_db, shop_code="matang")["orders"] == 0
+        assert order_repo.repo_summary(db_path=t_db, shop_code="1-tiktok")["orders"] == 3, "Clearing Matang repo must NOT affect BUNGTEE!"
+
+        # 2. Simulate user's exact scenario: BUNGTEE snapshot exists, per-shop repo missing after old shared repo was deleted
+        order_repo.clear_repo(db_path=t_db, shop_code="1-tiktok")
+        assert order_repo.repo_summary(db_path=t_db, shop_code="1-tiktok")["orders"] == 0
+
+        db.save_snapshot(
+            month="2026-03 (1-Tiktok)",
+            summary_dict={"orders": 3, "net_sales": 1500.0, "net_profit": 800.0},
+            orders_df=pd.DataFrame({"order_id": ["9000001", "9000002", "9000003"], "net_sales": [500.0, 500.0, 500.0]}),
+            lines_df=pd.DataFrame(),
+            ads_df=pd.DataFrame(),
+            source="settlement",
+            warnings=[],
+            raw_orders_df=raw_bungtee,
+            shop_code="1-tiktok",
+            db_path=t_db,
+        )
+        # Reset migration flag to simulate first run after git pull
+        db.set_app_state("order_repo_isolated_v3", "0", db_path=t_db)
+        order_repo.reset_migration_cache()
+
+        assert order_repo.repo_summary(db_path=t_db, shop_code="matang")["orders"] == 0, "Matang repo should remain empty"
+        assert order_repo.repo_summary(db_path=t_db, shop_code="1-tiktok")["orders"] == 3, "BUNGTEE repo must auto-recover all 3 orders!"
+        print("  ✓ Strict per-shop Order Repo isolation & automatic BUNGTEE recovery verified 100%!")
+
+
 if __name__ == "__main__":
     print("==================================================")
     print(" RUNNING ANTIGRAVITY COMPREHENSIVE SYSTEM TESTS   ")
@@ -214,6 +280,7 @@ if __name__ == "__main__":
     test_5_ui_component_metrics()
     test_6_multi_shop_lifecycle()
     test_7_missing_sku_detection_and_recalc()
+    test_8_multi_channel_repo_isolation_and_recovery()
     print("==================================================")
     print(" ✅ ALL TESTS PASSED SUCCESSFULLY! ZERO BUGS FOUND")
     print("==================================================")

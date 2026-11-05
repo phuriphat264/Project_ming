@@ -87,7 +87,8 @@ def init_db(db_path: Path | None = None) -> None:
                 original_name TEXT NOT NULL,
                 stored_name TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL DEFAULT 0,
-                uploaded_by TEXT
+                uploaded_by TEXT,
+                shop_code TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS app_state (
                 key TEXT PRIMARY KEY,
@@ -152,27 +153,65 @@ def init_db(db_path: Path | None = None) -> None:
                 ("dwine", "ดีไวน์ (Dwine)", "@dwine_thailand", 0, 1, now_str),
             )
 
+        # เพิ่มคอลัมน์ shop_code ใน uploaded_files หากยังไม่มี
+        up_cols = {r[1] for r in c.execute("PRAGMA table_info(uploaded_files)").fetchall()}
+        if "shop_code" not in up_cols:
+            c.execute("ALTER TABLE uploaded_files ADD COLUMN shop_code TEXT DEFAULT ''")
+
         # ซ่อมแซม snapshot ที่อาจเคยถูกบันทึก shop_code ผิดเป็น 'settlement'/'orders_only' หรือเผลอบันทึกแถวสรุปรวมทุกงวด
         c.execute("DELETE FROM monthly_snapshots WHERE month LIKE '%สรุปรวมทุกงวด%'")
-        valid_shops = c.execute("SELECT code, name FROM shops").fetchall()
+        valid_shops = c.execute("SELECT code, name, tiktok_handle FROM shops").fetchall()
         valid_codes = {r[0] for r in valid_shops}
+
+        def _infer_shop_from_label(lbl: str, snap_tag_map: dict[str, str] | None = None) -> str:
+            m_str = str(lbl or "")
+            if "ดีไวน์" in m_str and "dwine" in valid_codes:
+                return "dwine"
+            if "(" in m_str and ")" in m_str:
+                tag_part = m_str.split("(", 1)[1].rsplit(")", 1)[0].strip().lower()
+                if snap_tag_map and tag_part in snap_tag_map:
+                    return snap_tag_map[tag_part]
+                for sc, sname, shandle in valid_shops:
+                    sn_low = str(sname or "").lower()
+                    sh_low = str(shandle or "").lower().lstrip("@")
+                    sn_first = sn_low.split()[0].strip("()[]") if sn_low.split() else ""
+                    if tag_part and (
+                        tag_part == sc.lower()
+                        or tag_part in sn_low
+                        or (sn_first and tag_part == sn_first)
+                        or (sh_low and tag_part == sh_low)
+                    ):
+                        return sc
+            return "matang"
+
         bad_snaps = c.execute(
             "SELECT month, shop_code FROM monthly_snapshots WHERE shop_code IS NULL OR shop_code IN ('', 'settlement', 'orders_only')"
         ).fetchall()
         for m_lbl, _ in bad_snaps:
-            m_str = str(m_lbl or "")
-            repaired_code = "matang"
-            if "ดีไวน์" in m_str and "dwine" in valid_codes:
-                repaired_code = "dwine"
-            elif "(" in m_str and ")" in m_str:
-                tag_part = m_str.split("(", 1)[1].rsplit(")", 1)[0].strip().lower()
-                for sc, sname in valid_shops:
-                    sn_low = str(sname).lower()
-                    sn_first = sn_low.split()[0].strip("()[]") if sn_low.split() else ""
-                    if tag_part and (tag_part == sc.lower() or tag_part in sn_low or (sn_first and tag_part == sn_first)):
-                        repaired_code = sc
-                        break
+            repaired_code = _infer_shop_from_label(m_lbl)
             c.execute("UPDATE monthly_snapshots SET shop_code = ? WHERE month = ?", (repaired_code, m_lbl))
+
+        # ซิงค์ shop_code ให้ประวัติไฟล์อัปโหลด (uploaded_files) ที่ยังไม่มี shop_code เพื่อใช้กู้คืนคลังคำสั่งซื้อแยกตามร้านได้แม่นยำ
+        all_snaps_rows = c.execute("SELECT month, shop_code FROM monthly_snapshots WHERE shop_code IS NOT NULL AND shop_code != ''").fetchall()
+        snap_month_map = {str(m): str(sc) for m, sc in all_snaps_rows}
+        snap_tag_map: dict[str, str] = {}
+        for m, sc in all_snaps_rows:
+            m_s = str(m or "")
+            if "(" in m_s and ")" in m_s:
+                t_p = m_s.split("(", 1)[1].rsplit(")", 1)[0].strip().lower()
+                if t_p:
+                    snap_tag_map[t_p] = str(sc)
+
+        missing_up_rows = c.execute(
+            "SELECT id, period, original_name FROM uploaded_files WHERE shop_code IS NULL OR shop_code IN ('', 'settlement', 'orders_only')"
+        ).fetchall()
+        for up_id, up_period, up_orig in missing_up_rows:
+            p_str = str(up_period or "")
+            if p_str in snap_month_map:
+                up_sc = snap_month_map[p_str]
+            else:
+                up_sc = _infer_shop_from_label(f"{p_str} {up_orig or ''}", snap_tag_map=snap_tag_map)
+            c.execute("UPDATE uploaded_files SET shop_code = ? WHERE id = ?", (up_sc, up_id))
 
         # บัญชีเริ่มต้น (ควรเปลี่ยนรหัสผ่านหลังติดตั้ง)
         if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
@@ -879,9 +918,11 @@ def save_uploaded_excel(
     raw_bytes: bytes,
     period: str = "",
     uploaded_by: str = "",
+    shop_code: str = "",
     db_path: Path | None = None,
 ) -> Path:
-    """บันทึกสำเนาไฟล์ Excel ต้นฉบับไว้ในโฟลเดอร์ data/uploads/ พร้อมเก็บประวัติลง SQLite"""
+    """บันทึกสำเนาไฟล์ Excel ต้นฉบับไว้ในโฟลเดอร์ data/uploads/ พร้อมเก็บประวัติลง SQLite แยกตามร้านค้า"""
+    init_db(db_path)
     udir = _uploads_dir(db_path)
     now = datetime.now()
     safe_name = Path(original_name).name.replace("/", "_").replace("\\", "_")
@@ -890,28 +931,49 @@ def save_uploaded_excel(
     target_path = udir / stored_name
     target_path.write_bytes(raw_bytes)
 
+    clean_sc = str(shop_code or "").strip().lower()
+    if not clean_sc or clean_sc in ("settlement", "orders_only", "all"):
+        if "ดีไวน์" in str(period) or "dwine" in str(period).lower():
+            clean_sc = "dwine"
+        else:
+            det = detect_shop_from_text(f"{period} {safe_name}", db_path=db_path)
+            clean_sc = det["code"] if det else "matang"
+
     with connect(db_path) as c:
         c.execute(
             """
-            INSERT INTO uploaded_files (uploaded_at, period, original_name, stored_name, size_bytes, uploaded_by)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO uploaded_files (uploaded_at, period, original_name, stored_name, size_bytes, uploaded_by, shop_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (now.strftime("%Y-%m-%d %H:%M:%S"), period, safe_name, stored_name, len(raw_bytes), uploaded_by),
+            (now.strftime("%Y-%m-%d %H:%M:%S"), period, safe_name, stored_name, len(raw_bytes), uploaded_by, clean_sc),
         )
     return target_path
 
 
-def list_uploaded_excels(db_path: Path | None = None) -> pd.DataFrame:
+def list_uploaded_excels(db_path: Path | None = None, shop_code: str | None = None) -> pd.DataFrame:
+    init_db(db_path)
     udir = _uploads_dir(db_path)
     with connect(db_path) as c:
-        df = pd.read_sql(
-            """
-            SELECT id, uploaded_at, period, original_name, stored_name, size_bytes, uploaded_by
-            FROM uploaded_files
-            ORDER BY id DESC
-            """,
-            c,
-        )
+        if shop_code and str(shop_code).strip().lower() != "all":
+            df = pd.read_sql(
+                """
+                SELECT id, uploaded_at, period, original_name, stored_name, size_bytes, uploaded_by, shop_code
+                FROM uploaded_files
+                WHERE shop_code = ?
+                ORDER BY id DESC
+                """,
+                c,
+                params=(str(shop_code).strip().lower(),),
+            )
+        else:
+            df = pd.read_sql(
+                """
+                SELECT id, uploaded_at, period, original_name, stored_name, size_bytes, uploaded_by, shop_code
+                FROM uploaded_files
+                ORDER BY id DESC
+                """,
+                c,
+            )
     if df.empty:
         return df
     # แสดงเฉพาะไฟล์ที่ยังมีอยู่จริงใน data/uploads/
@@ -986,6 +1048,11 @@ def restore_backup_from_zip(zip_bytes: bytes, db_path: Path | None = None) -> in
             with zf.open(name) as src, open(target, "wb") as dst:
                 dst.write(src.read())
             count += 1
+    try:
+        from . import order_repo
+        order_repo.reset_migration_cache()
+    except Exception:
+        pass
     return count
 
 

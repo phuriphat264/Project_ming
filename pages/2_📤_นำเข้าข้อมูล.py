@@ -288,7 +288,13 @@ def _process_income_with_orders(
     period = detect_period_label(result, all_names, shop=shop)
 
     for fname, fbytes in [(income_name, income_bytes), *order_items]:
-        db.save_uploaded_excel(original_name=fname, raw_bytes=fbytes, period=period, uploaded_by=user["username"])
+        db.save_uploaded_excel(
+            original_name=fname,
+            raw_bytes=fbytes,
+            period=period,
+            uploaded_by=user["username"],
+            shop_code=s_code,
+        )
 
     repo_stat = order_repo.save_to_repo(new_raw_orders, shop_code=s_code)
 
@@ -656,11 +662,16 @@ if _flash:
 # ------------------------------------------------------------------------------
 repo_info = order_repo.repo_summary(shop_code=cur_selected_shop_code)
 repo_empty = repo_info["orders"] == 0
+safe_repo_sc = order_repo.normalize_shop_code(cur_selected_shop_code)
+can_recover_repo = is_admin() and order_repo.can_rebuild_repo_for_shop(cur_selected_shop_code)
 
 with st.container(border=True):
     rc1, rc2 = st.columns([2.2, 1.0], gap="medium")
     with rc1:
-        st.markdown("#### 🗄️ คลังคำสั่งซื้อสะสม (Order Repository)")
+        st.markdown(f"#### 🗄️ คลังคำสั่งซื้อสะสม — เฉพาะช่อง: {active_shop_info['name']}")
+        st.caption(
+            f"🔒 แยกคลังอิสระเฉพาะช่องนี้ (`orders_raw_{safe_repo_sc}.parquet`) — การเพิ่มหรือลบคลังของช่องนี้ **ไม่กระทบช่องอื่น 100%**"
+        )
         if repo_empty:
             st.info(
                 f"🟢 **เริ่มระบบครั้งแรกของ {active_shop_info['name']}:** คลังยังว่าง — กรุณาใส่ **Income 1 ไฟล์ + ไฟล์คำสั่งซื้อ 2 ไฟล์** "
@@ -669,44 +680,81 @@ with st.container(border=True):
         else:
             latest_m = repo_info["months"]["เดือนที่สั่งซื้อ"].iloc[0]
             st.success(
-                f"🔵 **รอบถัดไป:** ในคลังมี **{repo_info['orders']:,} ออเดอร์** (ล่าสุดเดือน **{latest_m}**) — "
-                "ใส่แค่ **Income + ไฟล์คำสั่งซื้อเดือนล่าสุด 1 ไฟล์** ได้เลย ระบบจะดึงออเดอร์เดือนก่อนจากคลังมาคิดต้นทุนให้อัตโนมัติ"
+                f"🔵 **คลังของ {active_shop_info['name']}:** มี **{repo_info['orders']:,} ออเดอร์** (ล่าสุดเดือน **{latest_m}**) — "
+                "ใส่แค่ **Income + ไฟล์คำสั่งซื้อเดือนล่าสุด 1 ไฟล์** ได้เลย ระบบจะดึงออเดอร์เดือนก่อนจากคลังของช่องนี้มาคิดต้นทุนให้อัตโนมัติ"
             )
         use_repo = st.checkbox(
-            "ดึงคำสั่งซื้อเดือนก่อนจากคลังสะสมอัตโนมัติ (แนะนำ)",
+            "ดึงคำสั่งซื้อเดือนก่อนจากคลังสะสมของช่องนี้อัตโนมัติ (แนะนำ)",
             value=True,
             disabled=repo_empty,
-            key="use_order_repo",
+            key=f"use_order_repo_{safe_repo_sc}",
         )
     with rc2:
-        if not repo_empty:
+        if repo_empty and can_recover_repo:
+            st.warning(f"💡 ตรวจพบข้อมูลงวด/ไฟล์คำสั่งซื้อเดิมของ **{active_shop_info['name']}** ที่บันทึกไว้ในระบบ")
+            if st.button(
+                f"🔄 กู้คืนคลังคำสั่งซื้อของ {active_shop_info['name']}",
+                type="primary",
+                width="stretch",
+                key=f"btn_recover_empty_repo_{safe_repo_sc}",
+            ):
+                with st.spinner(f"กำลังกู้คืนคลังคำสั่งซื้อของ {active_shop_info['name']}..."):
+                    rec_stat = order_repo.rebuild_repo_for_shop(cur_selected_shop_code, include_uploads=True)
+                st.toast(f"✅ กู้คืนคลังของ {active_shop_info['name']} สำเร็จ ({rec_stat['total']:,} ออเดอร์)", icon="🎉")
+                st.rerun()
+        elif not repo_empty:
             st.dataframe(repo_info["months"], hide_index=True, width="stretch", height=150)
             if is_admin():
-                with st.popover("🗑️ จัดการ / เลือกลบคลังคำสั่งซื้อ", width="stretch"):
+                with st.popover(f"🗑️ จัดการ / ลบคลังเฉพาะช่อง {active_shop_info['name']}", width="stretch"):
                     month_list = repo_info["months"]["เดือนที่สั่งซื้อ"].tolist()
-                    if "sel_del_repo_m" in st.session_state and st.session_state["sel_del_repo_m"] not in month_list:
-                        st.session_state.pop("sel_del_repo_m", None)
-                    st.markdown("##### 📌 1. เลือกลบเฉพาะเดือน (ลบทีละงวด)")
-                    st.caption("เลือกเดือนที่ต้องการลบออกจากคลัง (เดือนอื่นจะยังอยู่ครบ)")
-                    del_m = st.selectbox("เลือกเดือนที่ต้องการลบ:", month_list, key="sel_del_repo_m")
+                    sel_del_key = f"sel_del_repo_m_{safe_repo_sc}"
+                    if sel_del_key in st.session_state and st.session_state[sel_del_key] not in month_list:
+                        st.session_state.pop(sel_del_key, None)
+                    st.markdown(f"##### 📌 1. เลือกลบเฉพาะเดือน (เฉพาะช่อง {active_shop_info['name']})")
+                    st.caption("เลือกเดือนที่ต้องการลบออกจากคลังของช่องนี้ (เดือนอื่นและช่องอื่นยังอยู่ครบ)")
+                    del_m = st.selectbox("เลือกเดือนที่ต้องการลบ:", month_list, key=sel_del_key)
                     if del_m not in month_list:
                         del_m = month_list[0]
-                    if st.button(f"🗑️ ยืนยันลบเดือน {del_m}", type="primary", key="btn_del_single_repo_m", width="stretch"):
+                    if st.button(
+                        f"🗑️ ยืนยันลบเดือน {del_m} ({active_shop_info['name']})",
+                        type="primary",
+                        key=f"btn_del_single_repo_m_{safe_repo_sc}",
+                        width="stretch",
+                    ):
                         cnt = order_repo.delete_month_from_repo(del_m, shop_code=cur_selected_shop_code)
                         for k in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_rep_key", "_cached_rep_master_xlsx", "_cached_rep_xlsx", "_cached_page2_rep_xlsx", "_cached_page2_rep_key"):
                             st.session_state.pop(k, None)
-                        st.toast(f"ลบออเดอร์เดือน {del_m} ออกจากคลังเรียบร้อยแล้ว ({cnt:,} ออเดอร์)", icon="🗑️")
+                        st.toast(f"ลบออเดอร์เดือน {del_m} ออกจากคลังของ {active_shop_info['name']} แล้ว ({cnt:,} ออเดอร์)", icon="🗑️")
                         st.rerun()
 
-                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                    if can_recover_repo:
+                        st.divider()
+                        st.markdown("##### 🔄 2. กู้คืน/ซิงค์คลังจากงวดที่บันทึกไว้")
+                        st.caption("หากเผลอลบเดือนใดไป สามารถดึงคำสั่งซื้อจากงวดและไฟล์ที่เคยอัปโหลดของช่องนี้กลับมาได้")
+                        if st.button(
+                            f"🔄 กู้คืนออเดอร์ของ {active_shop_info['name']} จากระบบ",
+                            key=f"btn_resync_repo_{safe_repo_sc}",
+                            width="stretch",
+                        ):
+                            with st.spinner("กำลังซิงค์และกู้คืนคลังคำสั่งซื้อ..."):
+                                rec_stat = order_repo.rebuild_repo_for_shop(cur_selected_shop_code, include_uploads=True)
+                            st.toast(f"✅ ซิงค์คลังคำสั่งซื้อสำเร็จ (รวม {rec_stat['total']:,} ออเดอร์)", icon="🎉")
+                            st.rerun()
+
+                    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
                     st.divider()
-                    st.markdown("##### ⚠️ 2. ล้างคลังทั้งหมด (Reset ทั้งระบบ)")
-                    st.caption("ลบออเดอร์ทุกเดือนทิ้งทั้งหมด (รอบถัดไปต้องใส่ไฟล์ Order 2 ไฟล์ใหม่)")
-                    if st.button("ยืนยันล้างคลังทั้งหมด", type="secondary", key="btn_clear_order_repo", width="stretch"):
+                    st.markdown(f"##### ⚠️ 3. ล้างคลังทั้งหมดเฉพาะช่อง {active_shop_info['name']}")
+                    st.caption(f"ลบออเดอร์ทุกเดือนเฉพาะของช่อง {active_shop_info['name']} เท่านั้น (ช่องอื่นไม่ถูกกระทบ 100%)")
+                    if st.button(
+                        f"ยืนยันล้างคลังเฉพาะช่อง {active_shop_info['name']}",
+                        type="secondary",
+                        key=f"btn_clear_order_repo_{safe_repo_sc}",
+                        width="stretch",
+                    ):
                         order_repo.clear_repo(shop_code=cur_selected_shop_code)
                         for k in ("_cached_master_excel_bytes", "_cached_master_excel_key", "_cached_rep_key", "_cached_rep_master_xlsx", "_cached_rep_xlsx", "_cached_page2_rep_xlsx", "_cached_page2_rep_key"):
                             st.session_state.pop(k, None)
-                        st.toast("ล้างคลังคำสั่งซื้อสะสมทั้งหมดแล้ว", icon="🗑️")
+                        st.toast(f"ล้างคลังคำสั่งซื้อเฉพาะช่อง {active_shop_info['name']} เรียบร้อยแล้ว", icon="🗑️")
                         st.rerun()
 
 recommended_order_files = 2 if repo_empty else 1
@@ -979,6 +1027,7 @@ with tab_multi_upload:
                                 raw_bytes=raw_bytes,
                                 period=period,
                                 uploaded_by=user["username"],
+                                shop_code=s_code_multi,
                             )
 
                         if is_admin():
@@ -1005,6 +1054,7 @@ with tab_multi_upload:
                                 raw_bytes=raw_bytes,
                                 period=p_name,
                                 uploaded_by=user["username"],
+                                shop_code=s_code_multi,
                             )
                             if is_admin():
                                 _save_period_snapshot(p_name, res_i, shop_code=s_code_multi)

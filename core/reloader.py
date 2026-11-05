@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 _MTIMES: dict[str, float] = {}
-_ORDER = ("core.db", "core.loader", "core.pipeline", "core.metrics", "core.export", "core.ui")
+_ORDER = ("core.db", "core.loader", "core.order_repo", "core.pipeline", "core.metrics", "core.export", "core.ui")
 
 
 def ensure_fresh() -> None:

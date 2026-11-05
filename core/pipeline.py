@@ -453,23 +453,25 @@ def ensure_order_columns(df: pd.DataFrame) -> pd.DataFrame:
         o["growth_fee"] = 0.0
     if "campaign_service_fee" not in o.columns:
         o["campaign_service_fee"] = 0.0
+    zero_s = pd.Series(0.0, index=o.index)
     if "infra_and_other_fee" not in o.columns:
         known = (
-            o.get("commission", 0.0)
-            + o.get("affiliate", 0.0)
-            + o.get("shipping", 0.0)
-            + o.get("gmv_ads", 0.0)
+            pd.to_numeric(o.get("commission", zero_s), errors="coerce").fillna(0.0)
+            + pd.to_numeric(o.get("affiliate", zero_s), errors="coerce").fillna(0.0)
+            + pd.to_numeric(o.get("shipping", zero_s), errors="coerce").fillna(0.0)
+            + pd.to_numeric(o.get("gmv_ads", zero_s), errors="coerce").fillna(0.0)
         )
-        o["infra_and_other_fee"] = (o.get("platform_fees", 0.0) - known).clip(lower=0.0)
+        pf = pd.to_numeric(o.get("platform_fees", zero_s), errors="coerce").fillna(0.0)
+        o["infra_and_other_fee"] = (pf - known).clip(lower=0.0)
     if "gmv_max_order_fee" not in o.columns:
         o["gmv_max_order_fee"] = o.get("gmv_ads", 0.0)
     if "gmv_ads_deduction" not in o.columns:
         is_gmv = o.get("txn_type", pd.Series("", index=o.index)).astype(str).isin(GMV_ADS_TXN_TYPES)
-        adj = pd.to_numeric(o.get("adjustment", 0.0), errors="coerce").fillna(0.0)
+        adj = pd.to_numeric(o.get("adjustment", zero_s), errors="coerce").fillna(0.0)
         o["gmv_ads_deduction"] = (-adj).where(is_gmv, 0.0)
     if "other_adjustment" not in o.columns:
         is_gmv = o.get("txn_type", pd.Series("", index=o.index)).astype(str).isin(GMV_ADS_TXN_TYPES)
-        adj = pd.to_numeric(o.get("adjustment", 0.0), errors="coerce").fillna(0.0)
+        adj = pd.to_numeric(o.get("adjustment", zero_s), errors="coerce").fillna(0.0)
         o["other_adjustment"] = adj.where(~is_gmv, 0.0)
     if "customer_payment" not in o.columns:
         o["customer_payment"] = 0.0
